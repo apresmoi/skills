@@ -6,7 +6,7 @@ Antigravity, or dropped in by hand anywhere that reads `SKILL.md`.
 
 | Skill | What it does |
 |---|---|
-| [`harness-coding-agents`](skills/harness-coding-agents/SKILL.md) | Run the Codex, Grok, and Antigravity CLIs as bounded read-only consultants or explicitly authorised implementers. Preflights binaries and logins, captures per-engine reports. |
+| [`harness-coding-agents`](skills/harness-coding-agents/SKILL.md) | Run the Codex, Grok, Antigravity, and Claude Code CLIs as bounded read-only consultants or explicitly authorised implementers. Preflights binaries and logins, captures per-engine reports. |
 | [`deep-research`](skills/deep-research/SKILL.md) | Run a deep-research prompt through a logged-in ChatGPT Pro or SuperGrok session in a real Chrome, wait for the report, and capture it into an intake file. Runs inside a dedicated project so it never clutters chat history. |
 
 ## Install
@@ -51,10 +51,11 @@ Swap `~/.claude/skills` for `~/.codex/skills` (Codex) or `~/.agents/skills`
 
 ## Requirements
 
-- **harness-coding-agents**: Node 18+, and whichever of `codex`, `grok`, `agy`
+- **harness-coding-agents**: Node 18+, and whichever of `codex`, `grok`, `agy`, `claude`
   you want on `PATH`, each logged in with its own subscription. Run
   `node scripts/consult.mjs --check --engine all` inside the skill folder to
-  see what is ready.
+  see what is ready. Claude Code requires v2.1.269+ and a saved subscription
+  sign-in via `claude auth login`.
 - **deep-research**: Node 18+, system Google Chrome, `npm install` inside the
   skill folder, and a one-time cookie export from a browser logged in to
   chatgpt.com and/or grok.com. Onboarding steps, including the rules for an
@@ -63,7 +64,7 @@ Swap `~/.claude/skills` for `~/.codex/skills` (Codex) or `~/.agents/skills`
 ## Secrets
 
 Nothing in this repo holds credentials. Logins stay in each CLI's own home
-(`~/.codex`, `~/.grok`, Antigravity's OAuth store) or, for deep-research,
+(`~/.codex`, `~/.grok`, Antigravity's OAuth store, Claude's native credential store) or, for deep-research,
 under `~/.deep-research/` outside the repo. Never commit cookie files.
 
 ## Layout

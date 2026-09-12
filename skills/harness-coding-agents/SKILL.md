@@ -1,17 +1,19 @@
 ---
 name: harness-coding-agents
-description: Harness the locally installed subscription coding CLIs — Antigravity (`agy`), Grok (`grok`), and Codex (`codex`) — as bounded external agents for analysis, review, alternative solutions, adversarial checks, or explicitly authorized implementation. Use when the user asks to harness grok, run agy, use codex, consult Antigravity, get a second opinion or model council, delegate a work packet to an external agent. These CLIs drive paid SUBSCRIPTION logins (no API keys).
+description: Harness the locally installed subscription coding CLIs — Antigravity (`agy`), Grok (`grok`), Codex (`codex`), and Claude Code (`claude`) — as bounded external agents for analysis, review, alternative solutions, adversarial checks, or explicitly authorized implementation. Use when the user asks to harness grok, run agy, use codex, harness Claude Code, consult Antigravity, get a second opinion or model council, delegate a work packet to an external agent. These CLIs drive paid SUBSCRIPTION logins (no API keys).
 ---
 
-# Harness AGY, Grok, and Codex
+# Harness AGY, Grok, Codex, and Claude
 
-Treat `agy`, `grok`, and `codex` as bounded external collaborators. They all run
+Treat `agy`, `grok`, `codex`, and `claude` as bounded external collaborators. They all run
 on the user's paid **subscriptions** (never API keys): `agy` uses Antigravity
-OAuth, `grok` uses `~/.grok/auth.json`, `codex` uses `~/.codex/auth.json`. Keep
-the calling agent responsible for scope, verification, and the final answer.
+OAuth, `grok` uses `~/.grok/auth.json`, `codex` uses `~/.codex/auth.json`, and
+`claude` uses its saved Claude subscription sign-in. Keep the calling agent responsible for scope, verification, and the final answer.
 
-All three CLIs must be installed on PATH and logged in (see preflight below). This skill is self-contained: `scripts/consult.mjs` shells out to each,
-captures cleaned stdout/stderr per engine, and never uses a shell.
+Requested CLIs must be installed on PATH and logged in (see preflight below).
+Claude requires Claude Code v2.1.269 or later. This skill is self-contained:
+`scripts/consult.mjs` starts each CLI without a shell and captures cleaned
+stdout/stderr per engine.
 
 ## Run the workflow
 
@@ -23,8 +25,10 @@ captures cleaned stdout/stderr per engine, and never uses a shell.
 3. Exclude credentials, private keys, tokens, and unrelated private context
    from the prompt. CLI arguments and captured output may be locally visible.
 4. Preflight. The runner checks, per requested engine, that the binary is on
-   PATH and its login record exists (presence and mtime only, never contents),
-   prints one `[preflight] ok|FAIL <engine>` line each to stderr, and does NOT
+   PATH and its login record exists (presence and mtime only, never contents).
+   Claude instead runs a bounded `claude auth status --json` check for a saved
+   subscription login; raw account details are discarded. The runner prints
+   one `[preflight] ok|FAIL <engine>` line each to stderr, and does NOT
    launch a failing engine. To check without running anything:
 
    ```bash
@@ -32,8 +36,8 @@ captures cleaned stdout/stderr per engine, and never uses a shell.
    ```
 
    Nonzero exit = at least one engine is not ready; the FAIL line names the
-   missing executable or the `<cli> login` to run. Never substitute another
-   engine for a failed one — report the gap.
+   missing executable or the login command to run (`claude auth login` for
+   Claude). Never substitute another engine for a failed one — report the gap.
 5. Invoke `scripts/consult.mjs` from this skill directory:
 
    ```bash
@@ -64,10 +68,12 @@ captures cleaned stdout/stderr per engine, and never uses a shell.
    before trusting a report; a citation that doesn't exist means the engine
    was blind.
 
-   Consultation prompts must be runnable WITHOUT shell access for AGY/Grok:
-   their plan modes may deny every command tool. Pre-generate what the task
-   needs (e.g. `git diff > /abs/path/stack.patch`) and reference those
-   absolute paths in the prompt. Do NOT tell Codex to avoid shell commands —
+   Consultation prompts must be runnable WITHOUT shell access for AGY/Grok/Claude:
+   AGY/Grok plan modes may deny every command tool; Claude exposes only file
+   reads. Pre-generate what the task needs (e.g. `git diff > /abs/path/stack.patch`) and reference those
+   absolute paths in the prompt. For Claude, stage referenced evidence inside
+   `--cwd`; restricted file tools cannot read outside it. The prompt file itself
+   may be elsewhere because the runner reads it. Do NOT tell Codex to avoid shell commands —
    its read-only sandbox READS files via sandboxed shell (`cat`/`rg`), so a
    no-shell rule blinds it entirely (it will honestly refuse). Scope the
    restriction per engine: "read files however your sandbox allows; do not
@@ -82,14 +88,19 @@ captures cleaned stdout/stderr per engine, and never uses a shell.
    report only if the sentinel is present; a sentinel-less report is
    truncated — retry it, don't read silence as "no findings". (Engines cannot
    write report files themselves: consultation mode is read-only by design,
-   and neither CLI has a native report-to-file flag.)
+   and the runner captures their reports.)
+   For Claude, the runner adds the sentinel instruction and rejects malformed,
+   empty, unsuccessful, turn-limited, or incomplete results. The textual report
+   is in `claude.md`; `claude.result.json` retains run metadata for diagnosis.
+   If Claude emitted no JSON (for example on timeout), that raw file can be
+   empty or malformed; check `summary.json` and `claude.stderr.txt` as well.
 7. Synthesize only the useful evidence. Identify which engine supplied each
    important lead when provenance matters.
 
-Engine selection: `--engine agy|grok|codex` for one consultant, a comma list
+Engine selection: `--engine agy|grok|codex|claude` for one consultant, a comma list
 (`--engine grok,codex`), `--engine both` (agy+grok), or `--engine all`
-(agy+grok+codex). Use `--out-dir` to persist reports somewhere other than a
-temp dir. Run `node scripts/consult.mjs --help` for all options.
+(agy+grok+codex+claude). The default remains `both`. Use `--out-dir` to persist
+reports somewhere other than a temp dir. Run `node scripts/consult.mjs --help` for all options.
 
 ## Consultation vs implementation (per engine)
 
@@ -101,6 +112,12 @@ Consultation is the safe default — read-only, no ambient memory:
   `approval_policy="never"`. Codex keeps cross-session memories by default,
   read and written by every run; disabling them is what keeps a review
   independent of an earlier implementation run.
+- **Claude**: `--safe-mode --restricted`, only `Read,Glob,Grep` exposed and
+  pre-approved, `--permission-mode dontAsk --permission-prompts none`, empty
+  MCP configuration, and `--no-session-persistence`. Ordinary customizations
+  (including hooks, skills, CLAUDE.md, and auto-memory) are disabled; managed
+  policy still applies. Include necessary project instructions in the packet.
+  Never use `--bare`: it skips subscription and keychain authentication.
 
 ## Authorize writes deliberately
 
@@ -116,6 +133,10 @@ Write-mode escalations:
 - **AGY**: `--mode accept-edits --dangerously-skip-permissions`.
 - **Grok**: `--permission-mode auto --always-approve`.
 - **Codex**: `codex exec --sandbox workspace-write` with `approval_policy="never"`.
+- **Claude**: adds `Edit,Write,Bash` to the exposed and pre-approved tools.
+  Bash is unsandboxed; use an isolated worktree and verify the resulting diff
+  and tests yourself. Restricted file tools stay within the working directory;
+  this is not an OS sandbox.
 
 Before write mode:
 
@@ -138,20 +159,27 @@ file/line evidence, uncertainties, and suggested verification commands.
 
 ## Model selection
 
-Override per engine with `--agy-model`, `--grok-model`, `--codex-model`. Do not
+Override per engine with `--agy-model`, `--grok-model`, `--codex-model`, or
+`--claude-model`. `--max-turns` bounds Grok and Claude (default 24). Do not
 pin display labels in portable automation — installed catalogs change. Run
-`agy models`, `grok models`, and `codex --help` before changing flags or model
-identifiers. CLI contracts are external dependencies.
+`agy models`, `grok models`, `codex --help`, and `claude --help` before
+changing flags or model identifiers. CLI contracts are external dependencies.
+Claude model environment preferences are preserved; `--claude-model` overrides
+the primary model. Auth/provider overrides are handled separately below.
 
 ## Deeper contract
 
 Read [references/harness-contract.md](references/harness-contract.md) when
 changing invocation flags, authentication staging, model selection, isolation,
 or output cleanup. It records the external-engine boundary this skill applies
-to all three CLIs.
+to all four CLIs.
 
-If a CLI is missing or its login record is absent, the runner's preflight
+If a CLI is missing or its login check fails, the runner's preflight
 reports it and skips that engine; `summary.json` carries the `preflight`
-array. An expired-but-present login is NOT caught by preflight — it surfaces
-as a login error in `<engine>.stderr.txt`. Do not inspect, print, copy, or
+array. Claude uses its saved subscription sign-in and preserves
+`CLAUDE_CONFIG_DIR`; API/provider/auth-token environment overrides (including
+`CLAUDE_CODE_OAUTH_TOKEN`) are cleared for that child process. Re-authenticate
+with `claude auth login`. No credential files are read or copied by the runner.
+For the other engines, an expired-but-present login is NOT caught by preflight
+— it surfaces as a login error in `<engine>.stderr.txt`. Do not inspect, print, copy, or
 commit credential contents.

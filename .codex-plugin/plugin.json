@@ -1,7 +1,7 @@
 {
   "name": "skills",
   "version": "1.0.0",
-  "description": "Drive paid AI subscriptions as external agents: Codex/Grok/Antigravity CLIs as bounded consultants, and ChatGPT/Grok deep research through a logged-in browser. No API keys.",
+  "description": "Drive paid AI subscriptions as external agents: Codex/Grok/Antigravity/Claude Code CLIs as bounded consultants, and ChatGPT/Grok deep research through a logged-in browser. No API keys.",
   "author": {
     "name": "Juan Cruz Fortunatti",
     "url": "https://github.com/apresmoi"
@@ -12,6 +12,7 @@
   "keywords": [
     "skills",
     "codex",
+    "claude",
     "grok",
     "antigravity",
     "deep-research",
@@ -23,7 +24,7 @@
   "interface": {
     "displayName": "apresmoi skills",
     "shortDescription": "Subscription-driven external agents and deep research",
-    "longDescription": "Two skills. harness-coding-agents runs the Codex, Grok, and Antigravity CLIs as bounded read-only consultants or explicitly authorised implementers, with a preflight for binaries and logins. deep-research runs a prompt through a logged-in ChatGPT Pro or SuperGrok session in a real Chrome, inside a dedicated project, and captures the report into an intake file.",
+    "longDescription": "Two skills. harness-coding-agents runs the Codex, Grok, Antigravity, and Claude Code CLIs as bounded read-only consultants or explicitly authorised implementers, with a preflight for binaries and logins. deep-research runs a prompt through a logged-in ChatGPT Pro or SuperGrok session in a real Chrome, inside a dedicated project, and captures the report into an intake file.",
     "developerName": "Juan Cruz Fortunatti",
     "category": "Developer Tools",
     "capabilities": [
