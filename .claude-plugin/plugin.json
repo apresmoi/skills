@@ -8,5 +8,15 @@
   },
   "homepage": "https://github.com/apresmoi/skills",
   "repository": "https://github.com/apresmoi/skills",
-  "keywords": ["skills", "codex", "grok", "antigravity", "deep-research", "chatgpt", "subscription", "harness"]
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "codex",
+    "grok",
+    "antigravity",
+    "deep-research",
+    "chatgpt",
+    "subscription",
+    "harness"
+  ]
 }

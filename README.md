@@ -74,3 +74,7 @@ under `~/.deep-research/` outside the repo. Never commit cookie files.
 .agents/plugins/  marketplace.json                 (Codex marketplace)
 skills/           one folder per skill, each with SKILL.md
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).

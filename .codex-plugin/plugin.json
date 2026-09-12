@@ -8,7 +8,17 @@
   },
   "homepage": "https://github.com/apresmoi/skills",
   "repository": "https://github.com/apresmoi/skills",
-  "keywords": ["skills", "codex", "grok", "antigravity", "deep-research", "chatgpt", "subscription", "harness"],
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "codex",
+    "grok",
+    "antigravity",
+    "deep-research",
+    "chatgpt",
+    "subscription",
+    "harness"
+  ],
   "skills": "./skills/",
   "interface": {
     "displayName": "apresmoi skills",
@@ -16,7 +26,11 @@
     "longDescription": "Two skills. harness-coding-agents runs the Codex, Grok, and Antigravity CLIs as bounded read-only consultants or explicitly authorised implementers, with a preflight for binaries and logins. deep-research runs a prompt through a logged-in ChatGPT Pro or SuperGrok session in a real Chrome, inside a dedicated project, and captures the report into an intake file.",
     "developerName": "Juan Cruz Fortunatti",
     "category": "Developer Tools",
-    "capabilities": ["Interactive", "Read", "Write"],
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
     "defaultPrompt": [
       "Get a second opinion from codex and grok on this diff.",
       "Run a deep research on this topic and capture the report."
