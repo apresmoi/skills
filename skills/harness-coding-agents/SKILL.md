@@ -57,6 +57,13 @@ captures cleaned stdout/stderr per engine, and never uses a shell.
    repository, tests, or primary sources. Explain disagreements instead of
    resolving them by vote.
 
+   A complete report is not proof the engine could read. Observed: with
+   Codex's Code Mode host missing, file reads failed closed, yet Codex exited
+   0 and produced a confident, well-sourced-looking report built on nothing.
+   Require file/line citations and spot-check at least one against the repo
+   before trusting a report; a citation that doesn't exist means the engine
+   was blind.
+
    Consultation prompts must be runnable WITHOUT shell access for AGY/Grok:
    their plan modes may deny every command tool. Pre-generate what the task
    needs (e.g. `git diff > /abs/path/stack.patch`) and reference those
@@ -90,7 +97,10 @@ Consultation is the safe default — read-only, no ambient memory:
 
 - **AGY**: `--mode plan --sandbox`.
 - **Grok**: `--permission-mode plan --no-memory --disable-web-search --no-subagents`.
-- **Codex**: `codex exec --sandbox read-only` with `approval_policy="never"`.
+- **Codex**: `codex exec --sandbox read-only --disable memories` with
+  `approval_policy="never"`. Codex keeps cross-session memories by default,
+  read and written by every run; disabling them is what keeps a review
+  independent of an earlier implementation run.
 
 ## Authorize writes deliberately
 

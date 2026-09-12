@@ -60,7 +60,9 @@ Consultation is the safe default:
 
 - AGY: plan mode plus its sandbox.
 - Grok: plan permission mode, no memory, no web, no subagents.
-- Codex: `--sandbox read-only`, `approval_policy="never"`.
+- Codex: `--sandbox read-only --disable memories`, `approval_policy="never"`.
+  (`--disable memories` is `features.memories=false`; Codex memories are
+  cross-session and written by every run.)
 
 Implementation is an explicit escalation that grants substantial authority:
 

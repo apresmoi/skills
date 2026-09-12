@@ -271,6 +271,13 @@ const buildArgs = async (engine, { prompt, options, outDir }) => {
     "-c",
     'approval_policy="never"'
   ];
+  // Codex has native cross-session memories (config `[features] memories`,
+  // `generate_memories` / `use_memories`), read AND written by every run. In
+  // consultation the contract's "disable ambient cross-session memory" rule
+  // applies, same as Grok's --no-memory: otherwise a review inherits the
+  // conclusions an earlier implementation run deposited, and independence is
+  // lost silently. `--disable memories` == `-c features.memories=false`.
+  if (!options.write) args.push("--disable", "memories");
   if (options.codexModel) args.push("-m", options.codexModel);
   args.push(prompt);
   return { command: "codex", args };
