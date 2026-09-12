@@ -109,8 +109,8 @@ test("narrow symbols are not treated as wide", () => {
 test("spec errors exit 2 with a named reason", () => {
   bad({ dir: "xx", flow: ["a"] }, /unknown "dir"/);
   bad({ flow: [] }, /non-empty/);
-  bad({ flow: ["a", 42] }, /flow item 1/);
-  bad({ flow: ["a", { branch: ["x"] }, "b"] }, /must be the last item/);
+  bad({ flow: ["a", 42] }, /flow\[1\] must be a string/);
+  bad({ flow: ["a", { branch: ["x", "y"] }, "b"] }, /must be the last item/);
   bad({ dir: "tb", flow: ["a", { branch: ["x", "y"] }] }, /not supported in tb/);
   bad({ dir: "tb", flow: ["a", { parallel: ["x", ["y", "z"]] }] }, /plain labels/);
   bad({ dir: "tree", flow: ["a", { branch: ["x", "y"] }], loops: [{ from: "x", to: "a" }] }, /not supported in tree/);
@@ -190,7 +190,7 @@ test("interleaved loops draw a crossing and keep the label off it", () => {
   assert.equal(ok({ flow: ["a", "b", "c", "d", "e"], loops: [{ from: "d", to: "a", label: "L1" }, { from: "e", to: "b", label: "L2" }] }), [
     "a ─→ b ─→ c ─→ d ─→ e",
     "↑    ↑         │    │",
-    "└────┼─ L1 ────┘    │",
+    "└────╫─ L1 ────┘    │",
     "     │              │",
     "     └───── L2 ─────┘",
   ].join("\n"));
@@ -199,7 +199,7 @@ test("interleaved loops draw a crossing and keep the label off it", () => {
     "↑    ↑    │    ↑    │    │",
     "│    └ in ┘    │    │    │",
     "│              │    │    │",
-    "└─────── L1 ───┼────┘    │",
+    "└─────── L1 ───╫────┘    │",
     "               │         │",
     "               └── L2 ───┘",
   ].join("\n"));
@@ -219,4 +219,58 @@ test("a label too long for its span hangs right of the arc, or below if that is 
     "          │    │",
     "          └ x ─┘",
   ].join("\n"));
+});
+
+// ---- shared endpoints, crossing glyph, label avoidance ----
+test("loops sharing an endpoint continue through the arc corner", () => {
+  assert.equal(ok({ flow: ["a", "b", "c", "d"], loops: [{ from: "c", to: "a", label: "x" }, { from: "d", to: "a", label: "y" }] }), [
+    "a ─→ b ─→ c ─→ d",
+    "↑         │    │",
+    "├─── x ───┘    │",
+    "│              │",
+    "└───── y ──────┘",
+  ].join("\n"));
+  assert.equal(ok({ flow: ["a", "b", "c", "d"], loops: [{ from: "d", to: "b", label: "x" }, { from: "d", to: "a", label: "y" }] }), [
+    "a ─→ b ─→ c ─→ d",
+    "↑    ↑         │",
+    "│    └─── x ───┤",
+    "│              │",
+    "└───── y ──────┘",
+  ].join("\n"));
+});
+
+test("a label dropped below the arc stays clear of later channels", () => {
+  assert.equal(ok({ flow: ["a", "b", "c", "d"], loops: [{ from: "b", to: "a", label: "a rather long label" }, { from: "d", to: "c", label: "z" }] }), [
+    "a ─→ b ─→ c ─→ d",
+    "↑    │    ↑    │",
+    "└────┘    │    │",
+    "          │    │ a rather long label",
+    "          │    │",
+    "          └ z ─┘",
+  ].join("\n"));
+});
+
+// ---- strict spec surface ----
+test("unknown keys, wrong shapes, and bad labels are refused by name", () => {
+  bad({ flow: ["a", "b"], loop: [] }, /unknown key "loop" \(allowed: dir, flow, loops, width\)/);
+  bad({ flow: ["a", "b"], loops: [{ from: "b", to: "a", lable: "r" }] }, /loop 0: unknown key "lable"/);
+  bad({ flow: ["a", "b"], loops: { from: "b", to: "a" } }, /"loops" must be an array/);
+  bad({ flow: ["a", { parallel: ["x", "y"], branch: ["p", "q"] }] }, /flow\[1\] must be exactly one of/);
+  bad({ flow: ["a", "", "c"] }, /node flow\[1\] is empty/);
+  bad({ flow: ["a", "b\tc"] }, /node flow\[1\] contains a control character/);
+  bad({ flow: ["a", { parallel: [] }, "b"] }, /"parallel" needs at least one alternative/);
+  bad({ flow: ["a", { branch: ["only"] }] }, /"branch" needs at least two alternatives/);
+  bad({ flow: ["a", { parallel: ["x", []] }, "b"] }, /parallel\[1\] must be a non-empty flow/);
+  bad({ flow: ["a", "b"], loops: [{ from: "b", to: "a", label: ["x"] }] }, /"label" must be a string/);
+  bad({ dir: "tb", flow: ["a", "eval", "b", "eval"], loops: [{ from: "b", to: "eval" }] }, /matches 2 nodes/);
+  bad({ dir: "tb", flow: ["s", { parallel: ["left", "mid", "right"] }, "e"], loops: [{ from: "e", to: "left" }] }, /rightmost label of its fan/);
+  const two = spawnSync(process.execPath, [renderer, '{"flow":["a"]}', '{"flow":["b"]}'], { encoding: "utf8" });
+  assert.equal(two.status, 2); assert.match(two.stderr, /expected one spec/);
+  const opt = spawnSync(process.execPath, [renderer, "--frobnicate", '{"flow":["a"]}'], { encoding: "utf8" });
+  assert.equal(opt.status, 2); assert.match(opt.stderr, /unknown option --frobnicate/);
+});
+
+test("lenient inputs: numeric loop labels and uppercase dir", () => {
+  assert.equal(ok({ flow: ["a", "b"], loops: [{ from: "b", to: "a", label: 42 }] }), "a ─→ b\n↑    │\n└ 42 ┘");
+  assert.equal(ok({ dir: "TB", flow: ["a", "b"] }), "a\n↓\nb");
 });

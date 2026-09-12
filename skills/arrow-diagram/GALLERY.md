@@ -670,10 +670,11 @@ receive request ─→ validate schema ─→ authenticate caller ─┐
 └─→ serialize response ─→ emit metrics ─→ send
 ```
 
-## Interleaved loops cross with ┼; nested loops do not
+## Interleaved loops cross with ╫; nested loops do not
 
 L1 (e→a) and L2 (f→d) interleave, so L2's channel must pass through L1's
-arc; the crossing is drawn and the label keeps a dash clear of it. The inner
+arc; the crossing is drawn as ╫ (no connection; ┼ is a fan junction) and
+the label keeps a dash clear of it. The inner
 loop (c→b) nests cleanly.
 
 ```json
@@ -711,7 +712,7 @@ a ─→ b ─→ c ─→ d ─→ e ─→ f
 ↑    ↑    │    ↑    │    │
 │    └ in ┘    │    │    │
 │              │    │    │
-└─────── L1 ───┼────┘    │
+└─────── L1 ───╫────┘    │
                │         │
                └── L2 ───┘
 ```

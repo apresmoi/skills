@@ -114,8 +114,10 @@ with the arrowhead under the destination.
 Loops are stacked in spec order, each arc one band lower. Nested loops (one
 span inside another) never touch. Interleaved loops (spans that overlap
 without nesting) must cross, because the later loop's channel runs down
-through the earlier arc; the crossing is drawn as `┼` and labels are placed
-clear of it. A label too long for its span hangs to the right of the arc,
+through the earlier arc; the crossing is drawn as `╫` (a vertical passing
+over a horizontal, no connection) and labels are placed clear of it. `┼` is
+reserved for fan junctions, where lines do join. Two loops sharing an
+endpoint share the channel: the earlier arc's corner becomes `├` or `┤`. A label too long for its span hangs to the right of the arc,
 or drops below when another channel is in the way.
 
 ## Choosing a direction
@@ -142,13 +144,18 @@ user: cancel ─→ objection 1: metrics
 
 ## Labels
 
-Any text. Width is measured in terminal columns, so CJK, fullwidth, and
+Any single-line printable text; `dir` is case-insensitive and numeric loop
+labels are accepted. Width is measured in terminal columns, so CJK, fullwidth, and
 emoji labels (two columns each) keep rails and arcs aligned; `✓`, `→`, and
 the diagonal arrows stay one column, matching what terminals draw.
 
 ## Errors the renderer refuses (exit 2)
 
-- unknown `dir`; a `width` under 20; empty `flow`; a flow item that is not a string or group
+- an unknown top-level or loop key (typos like `loop` or `lable` are caught)
+- unknown `dir`; a `width` under 20; empty `flow`; a flow item that is not a string or exactly one group
+- an empty label, or one containing a tab, newline, or other control character
+- `parallel` with no alternatives; `branch` with fewer than two; an empty nested flow
+- in `tb`, a loop endpoint that is not the rightmost label of its fan
 - no mode fits the width budget (auto mode only)
 - `branch` not last in its flow; `branch` in `tb` mode
 - nested groups or chain alternatives in `tb` mode (use `lr`)

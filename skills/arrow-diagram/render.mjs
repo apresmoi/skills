@@ -62,8 +62,46 @@ Exit 0 on success, 2 on a spec error (message on stderr).`;
 function fail(msg) { console.error('arrow-diagram: ' + msg); process.exit(2); }
 
 
-// Why a mode cannot draw this spec, or null if it can. Structural errors
-// (bad item shapes, branch not last) are the same in every mode.
+// Labels must be printable single-line text: control characters, tabs, and
+// newlines cannot be measured or aligned. Returns a problem string (soft) or
+// fails outright (hard).
+function checkText(text, what, soft = false) {
+  let problem = null;
+  if (text.trim() === '') problem = `${what} is empty`;
+  else if (/[\u0000-\u001F\u007F]/.test(text)) problem = `${what} contains a control character (tab or newline)`;
+  if (problem && !soft) fail(problem);
+  return problem;
+}
+
+// Structural validation, independent of mode: item shapes, group sizes,
+// branch position, and label text. Fails on the first problem.
+function checkStructure(flow, path = 'flow') {
+  flow.forEach((item, k) => {
+    const where = `${path}[${k}]`;
+    if (typeof item === 'string') return checkText(item, `node ${where}`);
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+      fail(`${where} must be a string, {"parallel":[...]}, or {"branch":[...]}`);
+    }
+    const kinds = ['parallel', 'branch'].filter(key => key in item);
+    if (kinds.length !== 1 || Object.keys(item).length !== 1) {
+      fail(`${where} must be exactly one of {"parallel":[...]} or {"branch":[...]}`);
+    }
+    const kind = kinds[0];
+    if (!Array.isArray(item[kind])) fail(`${where}: "${kind}" must be an array of alternatives`);
+    if (kind === 'parallel' && item[kind].length === 0) fail(`${where}: "parallel" needs at least one alternative`);
+    if (kind === 'branch' && item[kind].length < 2) fail(`${where}: "branch" needs at least two alternatives`);
+    if (kind === 'branch' && k < flow.length - 1) fail(`${where}: "branch" must be the last item of its flow`);
+    item[kind].forEach((alt, i) => {
+      const sub = `${where}.${kind}[${i}]`;
+      if (typeof alt === 'string') return checkText(alt, `node ${sub}`);
+      if (!Array.isArray(alt)) fail(`${sub} must be a string or a nested flow array`);
+      if (alt.length === 0) fail(`${sub} must be a non-empty flow`);
+      checkStructure(alt, sub);
+    });
+  });
+}
+
+// Why a mode cannot draw this spec, or null if it can (structure is already valid).
 function modeProblem(spec, mode) {
   let problem = null;
   const bad = msg => { if (!problem) problem = msg; };
@@ -73,16 +111,13 @@ function modeProblem(spec, mode) {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) {
       return bad(`flow item ${k} must be a string, {"parallel":[...]}, or {"branch":[...]}`);
     }
-    const kind = Array.isArray(item.parallel) ? 'parallel' : Array.isArray(item.branch) ? 'branch' : null;
-    if (!kind) return bad(`flow item ${k} must be a string, {"parallel":[...]}, or {"branch":[...]}`);
-    if (kind === 'branch' && k < flow.length - 1) bad('"branch" must be the last item of its flow');
+    const kind = 'parallel' in item ? 'parallel' : 'branch';
     if (kind === 'branch' && mode === 'tb') bad('"branch" is not supported in tb mode (use lr or tree)');
     if (mode === 'tb' && depth > 0) bad('tb mode does not support nested groups');
     if (mode === 'tb' && kind === 'parallel' && item.parallel.length > 3) bad('tb mode supports at most 3 parallel branches (use lr)');
     if (mode === 'wrap') bad('wrapped mode only draws a plain chain (no groups)');
     for (const alt of item[kind]) {
       if (typeof alt === 'string') continue;
-      if (!Array.isArray(alt)) return bad(`each ${kind} alternative must be a string or a nested flow array`);
       if (mode === 'tb') bad('tb mode alternatives must be plain labels (use lr for chains)');
       walk(alt, depth + 1);
     }
@@ -252,7 +287,11 @@ function renderLR(spec) {
     const cps = [...line];
     while (i < cps.length && col < x) { col += dw(cps[i]); i++; }
     if (col !== x) return;                     // inside a wide glyph
-    if (cps[i] === '─' && ch === '│') cps[i] = '┼';   // channel crosses an earlier arc
+    // A later channel running down through an earlier loop's arc row:
+    //   ─ → ╫  crossing, no connection (┼ is reserved for fan junctions)
+    //   └ → ├  and  ┘ → ┤  the arc's corner, when both loops share this column
+    const through = { '─': '╫', '└': '├', '┘': '┤' };
+    if (ch === '│' && through[cps[i]]) cps[i] = through[cps[i]];
     else if (cps[i] !== ' ') return;           // occupied by text: leave it
     else cps[i] = ch;
     lines[row] = cps.join('');
@@ -316,7 +355,12 @@ function renderLR(spec) {
     if (label && !placed && clear(hi + 1, lw + 1)) { arc += ' ' + label; placed = true; }
     lines.push(arc);
     if (label && !placed) {
-      const start = Math.max(Math.floor((lo + hi) / 2) - Math.floor(lw / 2), 0);
+      const centre = Math.max(Math.floor((lo + hi) / 2) - Math.floor(lw / 2), 0);
+      const limit = Math.max(...channelCols, hi) + lw + 2;
+      let start = centre;
+      for (let best = Infinity, c = 0; c <= limit; c++) {
+        if (clear(c, lw) && Math.abs(c - centre) < best) { best = Math.abs(c - centre); start = c; }
+      }
       lines.push(' '.repeat(start) + label);
     }
   }
@@ -395,6 +439,9 @@ function renderTB(spec) {
   };
   let prevPar = null; // centers of previous parallel row
   const rowOf = new Map(); // node label -> line index (for loop endpoints)
+  const seen = new Map();  // label -> occurrences, to refuse ambiguous endpoints
+  const fanPos = new Map(); // label -> 'rightmost' | 'inner' when inside a fan row
+  const note = label => seen.set(label, (seen.get(label) ?? 0) + 1);
   items.forEach((it, idx) => {
     const isPar = typeof it === 'object' && Array.isArray(it.parallel);
     if (!isPar) {
@@ -407,7 +454,7 @@ function renderTB(spec) {
         } else put('↓', C);
       }
       put(label, C);
-      rowOf.set(label, lines.length - 1);
+      rowOf.set(label, lines.length - 1); note(label);
       prevPar = null;
     } else {
       const labels = it.parallel.map(branchText);
@@ -424,7 +471,7 @@ function renderTB(spec) {
           : [['↙', centers[0]], ['↓', centers[1]], ['↘', centers[2]]]);
       }
       putMulti(labels.map((l, i) => [l, centers[i]]));
-      labels.forEach(l => rowOf.set(l, lines.length - 1));
+      labels.forEach((l, i) => { rowOf.set(l, lines.length - 1); note(l); fanPos.set(l, i === labels.length - 1 ? 'rightmost' : 'inner'); });
       prevPar = centers;
     }
   });
@@ -432,7 +479,10 @@ function renderTB(spec) {
   // Loops: return channels down the right margin, one column band per loop.
   for (const loop of spec.loops ?? []) {
     for (const key of ['from', 'to']) {
-      if (!rowOf.has(loop[key])) fail(`loop endpoint "${loop[key]}" not found in rendered flow`);
+      const label = loop[key];
+      if (!rowOf.has(label)) fail(`loop endpoint "${label}" is not a node label in the flow`);
+      if (seen.get(label) > 1) fail(`loop endpoint "${label}" matches ${seen.get(label)} nodes; make the label unique`);
+      if (fanPos.get(label) === 'inner') fail(`tb loops attach at the right margin, so "${label}" must be the rightmost label of its fan (or use lr)`);
     }
     const fromRow = rowOf.get(loop.from), toRow = rowOf.get(loop.to);
     const top = Math.min(fromRow, toRow), bot = Math.max(fromRow, toRow);
@@ -468,6 +518,8 @@ function main() {
   }
   const arg = argv[0];
   if (arg === '-h' || arg === '--help') { console.log(USAGE); process.exit(0); }
+  for (const a of argv) if (a.startsWith('--')) fail(`unknown option ${a} (see --help)`);
+  if (argv.length > 1) fail(`expected one spec (file, inline JSON, or stdin), got ${argv.length} arguments`);
   let src;
   if (!arg || arg === '-') src = readFileSync(0, 'utf8');
   else if (arg.trim().startsWith('{')) src = arg;
@@ -480,15 +532,29 @@ function main() {
   try { spec = JSON.parse(src); }
   catch (e) { fail('invalid JSON: ' + e.message); }
 
-  const requested = spec.dir ?? 'auto';
-  if (!['auto', 'lr', 'tb', 'tree'].includes(requested)) fail(`unknown "dir": "${requested}" (use auto, lr, tb, or tree)`);
+  if (typeof spec !== 'object' || spec === null || Array.isArray(spec)) fail('spec must be a JSON object');
+  const TOP = ['dir', 'flow', 'loops', 'width'];
+  for (const key of Object.keys(spec)) if (!TOP.includes(key)) fail(`unknown key "${key}" (allowed: ${TOP.join(', ')})`);
+  if (spec.dir !== undefined && typeof spec.dir !== 'string') fail('"dir" must be a string');
+  const requested = (spec.dir ?? 'auto').toLowerCase();
+  if (!['auto', 'lr', 'tb', 'tree'].includes(requested)) fail(`unknown "dir": "${spec.dir}" (use auto, lr, tb, or tree)`);
   if (!Array.isArray(spec.flow) || spec.flow.length === 0) fail('"flow" must be a non-empty array');
+  checkStructure(spec.flow);
   const budget = cliWidth ?? spec.width ?? 80;
   if (!Number.isInteger(budget) || budget < 20) fail('"width" must be an integer of at least 20');
-  for (const loop of spec.loops ?? []) {
-    if (typeof loop?.from !== 'string' || typeof loop?.to !== 'string') fail('each loop needs string "from" and "to"');
+  if (spec.loops !== undefined && !Array.isArray(spec.loops)) fail('"loops" must be an array of {from, to, label}');
+  const LOOP = ['from', 'to', 'label'];
+  (spec.loops ?? []).forEach((loop, i) => {
+    if (typeof loop !== 'object' || loop === null || Array.isArray(loop)) fail(`loop ${i} must be an object {from, to, label}`);
+    for (const key of Object.keys(loop)) if (!LOOP.includes(key)) fail(`loop ${i}: unknown key "${key}" (allowed: ${LOOP.join(', ')})`);
+    if (typeof loop.from !== 'string' || typeof loop.to !== 'string') fail(`loop ${i} needs string "from" and "to"`);
     if (loop.from === loop.to) fail(`self-loop on "${loop.from}" is not supported; loops need two distinct nodes`);
-  }
+    if (loop.label !== undefined) {
+      if (typeof loop.label === 'number') loop.label = String(loop.label);
+      if (typeof loop.label !== 'string') fail(`loop ${i}: "label" must be a string`);
+      checkText(loop.label, `loop ${i} label`);
+    }
+  });
 
   const widthOf = text => Math.max(...text.split('\n').map(l => dw(l)));
   const attempt = mode => {
