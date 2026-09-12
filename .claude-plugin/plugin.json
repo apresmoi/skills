@@ -1,0 +1,12 @@
+{
+  "name": "skills",
+  "description": "Drive paid AI subscriptions as external agents: Codex/Grok/Antigravity CLIs as bounded consultants, and ChatGPT/Grok deep research through a logged-in browser. No API keys.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Juan Cruz Fortunatti",
+    "url": "https://github.com/apresmoi"
+  },
+  "homepage": "https://github.com/apresmoi/skills",
+  "repository": "https://github.com/apresmoi/skills",
+  "keywords": ["skills", "codex", "grok", "antigravity", "deep-research", "chatgpt", "subscription", "harness"]
+}

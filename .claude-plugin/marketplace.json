@@ -1,0 +1,20 @@
+{
+  "name": "apresmoi",
+  "description": "Skills by apresmoi for Claude Code",
+  "owner": {
+    "name": "Juan Cruz Fortunatti",
+    "url": "https://github.com/apresmoi"
+  },
+  "plugins": [
+    {
+      "name": "skills",
+      "description": "Drive paid AI subscriptions as external agents: Codex/Grok/Antigravity CLIs as bounded consultants, and ChatGPT/Grok deep research through a logged-in browser. No API keys.",
+      "version": "1.0.0",
+      "source": "./",
+      "author": {
+        "name": "Juan Cruz Fortunatti",
+        "url": "https://github.com/apresmoi"
+      }
+    }
+  ]
+}

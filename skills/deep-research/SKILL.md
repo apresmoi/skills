@@ -51,8 +51,11 @@ are involved. Procedure for the agent:
    project URL in `~/.deep-research/projects.json` under `<site>.<name>` so
    the runner and later sessions reuse it; it is not a secret. Never assume
    a hardcoded project.
-3. ChatGPT: enable **Deep research** in the composer tools and confirm the
-   effort pill (default `Extra High`). Grok: pick **Expert** (or `Heavy`) in
+3. ChatGPT: first confirm the **Chat / Work** toggle above the composer is
+   on **Chat**. Work routes the prompt into an agentic task run, metered
+   differently and not a research session. If Chat cannot be selected, stop
+   and tell the user; never send in Work. Then enable **Deep research** in
+   the composer tools and confirm the effort pill (default `Extra High`). Grok: pick **Expert** (or `Heavy`) in
    the model menu and confirm the selection is visible before sending.
 4. Paste the prompt, send, and tell the user the expected wait (15 to 60 min).
 5. Poll the tab every few minutes with `get_page_text` or `find`. Apply the
@@ -239,6 +242,10 @@ node probe.mjs https://chatgpt.com/
   shell — the headed window needs a display and the manual "press Enter"
   fallback needs stdin. Close any other Chrome using the same profile first
   (persistent profiles are single-instance).
+- ChatGPT **Chat vs Work**: the runner forces the Chat toggle before sending
+  and refuses to run (exit 1, "not in Chat mode") if Chat cannot be
+  confirmed. Work mode would route the prompt into an agentic task run
+  instead of a research session.
 - A short assistant reply ending in `?` is treated as a **clarifying
   question**: the script warns and keeps waiting — answer it in the window.
 - Done-detection: not streaming + message ≥ 2500 chars + unchanged 2.5 min
