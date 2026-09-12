@@ -1,0 +1,10 @@
+{
+  "name": "deep-research-runner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Topic-agnostic deep-research runner: drives a logged-in ChatGPT/Grok session in headed Chrome on the machine holding the logins.",
+  "dependencies": {
+    "playwright": "^1.48.0"
+  }
+}
