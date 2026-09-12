@@ -1,7 +1,7 @@
 {
   "name": "skills",
   "version": "1.0.0",
-  "description": "Drive paid AI subscriptions as external agents: Codex/Grok/Antigravity/Claude Code CLIs as bounded consultants, and ChatGPT/Grok deep research through a logged-in browser. No API keys.",
+  "description": "Drive paid AI subscriptions as external agents: Codex/Grok/Antigravity/Claude Code CLIs as bounded consultants, and ChatGPT/Grok deep research through a logged-in browser. No API keys. Plus arrow-diagram: aligned ASCII flow diagrams from JSON.",
   "author": {
     "name": "Juan Cruz Fortunatti",
     "url": "https://github.com/apresmoi"
@@ -18,13 +18,15 @@
     "deep-research",
     "chatgpt",
     "subscription",
-    "harness"
+    "harness",
+    "ascii",
+    "diagram"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "apresmoi skills",
     "shortDescription": "Subscription-driven external agents and deep research",
-    "longDescription": "Two skills. harness-coding-agents runs the Codex, Grok, Antigravity, and Claude Code CLIs as bounded read-only consultants or explicitly authorised implementers, with a preflight for binaries and logins. deep-research runs a prompt through a logged-in ChatGPT Pro or SuperGrok session in a real Chrome, inside a dedicated project, and captures the report into an intake file.",
+    "longDescription": "Three skills. harness-coding-agents runs the Codex, Grok, Antigravity, and Claude Code CLIs as bounded read-only consultants or explicitly authorised implementers, with a preflight for binaries and logins. deep-research runs a prompt through a logged-in ChatGPT Pro or SuperGrok session in a real Chrome, inside a dedicated project, and captures the report into an intake file. arrow-diagram renders aligned ASCII arrow diagrams (fan-out, fan-in, decision trees, loops) from a small JSON spec.",
     "developerName": "Juan Cruz Fortunatti",
     "category": "Developer Tools",
     "capabilities": [
@@ -34,7 +36,8 @@
     ],
     "defaultPrompt": [
       "Get a second opinion from codex and grok on this diff.",
-      "Run a deep research on this topic and capture the report."
+      "Run a deep research on this topic and capture the report.",
+      "Draw this pipeline as an ASCII arrow diagram."
     ],
     "websiteURL": "https://github.com/apresmoi/skills"
   }

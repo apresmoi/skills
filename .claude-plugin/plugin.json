@@ -1,6 +1,6 @@
 {
   "name": "skills",
-  "description": "Drive paid AI subscriptions as external agents: Codex/Grok/Antigravity/Claude Code CLIs as bounded consultants, and ChatGPT/Grok deep research through a logged-in browser. No API keys.",
+  "description": "Drive paid AI subscriptions as external agents: Codex/Grok/Antigravity/Claude Code CLIs as bounded consultants, and ChatGPT/Grok deep research through a logged-in browser. No API keys. Plus arrow-diagram: aligned ASCII flow diagrams from JSON.",
   "version": "1.0.0",
   "author": {
     "name": "Juan Cruz Fortunatti",
@@ -18,6 +18,8 @@
     "deep-research",
     "chatgpt",
     "subscription",
-    "harness"
+    "harness",
+    "ascii",
+    "diagram"
   ]
 }
