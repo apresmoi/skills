@@ -15,6 +15,33 @@ echo '{"flow":[…]}' | node render.mjs
 node render.mjs --help
 ```
 
+## Know the width of the destination first
+
+A diagram wider than the box it lands in soft-wraps and turns into garbage.
+The renderer plans against a column budget: `--width N` on the CLI, else
+`"width": N` in the spec, else **80**. Before rendering, decide the budget:
+
+| Destination | Budget |
+|---|---|
+| Chat UI code block (Claude, ChatGPT, Slack, GitHub comment) | 80, the default |
+| Terminal | `$COLUMNS`, or `tput cols` |
+| Markdown file, README | 80 to 100 |
+
+With no `dir`, the renderer picks the first mode that fits, in this order:
+`lr`, a wrapped chain (plain chains without loops), `tree` (no loops), `tb`
+(plain fans, no branch). An explicit `dir` is always honoured, but an
+overflow prints a warning on stderr naming which modes would fit. When
+nothing fits, it exits 2 listing why each mode failed: shorten labels, raise
+the budget, or split the diagram.
+
+A wrapped chain snakes onto the next row:
+
+```
+receive request ─→ validate schema ─→ authenticate caller ─┐
+┌──────────────────────────────────────────────────────────┘
+└─→ load tenant config ─→ apply rate limit ─→ send
+```
+
 The diagram goes to stdout. Exit 0 on success; exit 2 with a named reason on
 stderr for any spec the renderer cannot draw (it never prints
 `[object Object]` or a half-drawn shape). `GALLERY.md` holds worked examples
@@ -24,7 +51,8 @@ of every shape, and `render.test.mjs` replays them as golden tests.
 
 ```json
 {
-  "dir": "lr",                    // "lr" (default) | "tb" | "tree"
+  "dir": "auto",                  // "auto" (default) | "lr" | "tb" | "tree"
+  "width": 80,                    // column budget; CLI --width overrides
   "flow": [ "task", "planner", { "parallel": […] }, { "branch": […] } ],
   "loops": [ { "from": "tests", "to": "planner", "label": "fail, retry" } ]
 }
@@ -87,6 +115,7 @@ with the arrowhead under the destination.
 
 | `dir` | Use when | Supports |
 |---|---|---|
+| `auto` | you don't care, as long as it fits the width budget | picks from the rows below |
 | `lr` | sequence and order: what happens after what | parallel, branch, loops, nesting |
 | `tb` | funnels: which candidate wins, volume narrowing to a verdict | parallel (max 3, plain labels), loops |
 | `tree` | deep decision ladders that would run off the page in `lr` | parallel, branch, nesting |
@@ -103,7 +132,6 @@ user: cancel ─→ objection 1: metrics
         └─→ insists ─→ cancel granted ─→ exit survey
 ```
 
-An `lr` render wider than 110 columns prints a hint on stderr suggesting `tree`.
 
 ## Labels
 
@@ -113,7 +141,8 @@ the diagonal arrows stay one column, matching what terminals draw.
 
 ## Errors the renderer refuses (exit 2)
 
-- unknown `dir`; empty `flow`; a flow item that is not a string or group
+- unknown `dir`; a `width` under 20; empty `flow`; a flow item that is not a string or group
+- no mode fits the width budget (auto mode only)
 - `branch` not last in its flow; `branch` in `tb` mode
 - nested groups or chain alternatives in `tb` mode (use `lr`)
 - `loops` in `tree` mode; a self-loop; an endpoint that is not a node

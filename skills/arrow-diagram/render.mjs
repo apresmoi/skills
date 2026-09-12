@@ -43,37 +43,81 @@ const USAGE = `arrow-diagram — render ASCII arrow diagrams from a JSON spec.
   node render.mjs '{"flow":[...]}'    # inline JSON
   echo '{...}' | node render.mjs      # spec on stdin
 
-Spec: { "dir": "lr"|"tb"|"tree", "flow": [...], "loops": [...] }
+  node render.mjs --width 100 graph.json   # column budget (default 80)
+
+Spec: { "dir": "auto"|"lr"|"tb"|"tree", "flow": [...], "loops": [...], "width": 80 }
   flow item : "label" | {"parallel":[alt,...]} | {"branch":[alt,...]}
   alt       : "label" | [nested flow]
   loop      : {"from":"label","to":"label","label":"text"}   (lr, tb)
+
+Width: the diagram is planned to fit "width" columns (CLI --width wins,
+default 80: what a chat code block or a narrow terminal shows without
+wrapping). With no "dir", the first mode that fits is chosen: lr, a wrapped
+chain (plain chains, no loops), tree (no loops), then tb (plain fans, no
+branch). An explicit
+"dir" is honoured but warns on stderr when it overflows.
 
 Exit 0 on success, 2 on a spec error (message on stderr).`;
 
 function fail(msg) { console.error('arrow-diagram: ' + msg); process.exit(2); }
 
 
-// Reject shapes a mode cannot draw instead of printing "[object Object]".
-function validate(flow, mode, depth = 0) {
-  flow.forEach((item, k) => {
+// Why a mode cannot draw this spec, or null if it can. Structural errors
+// (bad item shapes, branch not last) are the same in every mode.
+function modeProblem(spec, mode) {
+  let problem = null;
+  const bad = msg => { if (!problem) problem = msg; };
+  const hasLoops = (spec.loops ?? []).length > 0;
+  const walk = (flow, depth) => flow.forEach((item, k) => {
     if (typeof item === 'string') return;
     if (typeof item !== 'object' || item === null || Array.isArray(item)) {
-      fail(`flow item ${k} must be a string, {"parallel":[...]}, or {"branch":[...]}`);
+      return bad(`flow item ${k} must be a string, {"parallel":[...]}, or {"branch":[...]}`);
     }
     const kind = Array.isArray(item.parallel) ? 'parallel' : Array.isArray(item.branch) ? 'branch' : null;
-    if (!kind) fail(`flow item ${k} must be a string, {"parallel":[...]}, or {"branch":[...]}`);
-    if (kind === 'branch' && mode === 'tb') fail('"branch" is not supported in tb mode (use lr or tree)');
-    if (kind === 'branch' && k < flow.length - 1) fail('"branch" must be the last item of its flow');
-    if (mode === 'tb' && depth > 0) fail('tb mode does not support nested groups');
+    if (!kind) return bad(`flow item ${k} must be a string, {"parallel":[...]}, or {"branch":[...]}`);
+    if (kind === 'branch' && k < flow.length - 1) bad('"branch" must be the last item of its flow');
+    if (kind === 'branch' && mode === 'tb') bad('"branch" is not supported in tb mode (use lr or tree)');
+    if (mode === 'tb' && depth > 0) bad('tb mode does not support nested groups');
+    if (mode === 'tb' && kind === 'parallel' && item.parallel.length > 3) bad('tb mode supports at most 3 parallel branches (use lr)');
+    if (mode === 'wrap') bad('wrapped mode only draws a plain chain (no groups)');
     for (const alt of item[kind]) {
       if (typeof alt === 'string') continue;
-      if (!Array.isArray(alt)) fail(`each ${kind} alternative must be a string or a nested flow array`);
-      if (mode === 'tb') fail('tb mode alternatives must be plain labels (use lr for chains)');
-      validate(alt, mode, depth + 1);
+      if (!Array.isArray(alt)) return bad(`each ${kind} alternative must be a string or a nested flow array`);
+      if (mode === 'tb') bad('tb mode alternatives must be plain labels (use lr for chains)');
+      walk(alt, depth + 1);
     }
   });
+  walk(spec.flow, 0);
+  if (hasLoops && mode === 'tree') bad('"loops" are not supported in tree mode (use lr or tb)');
+  if (hasLoops && mode === 'wrap') bad('wrapped mode does not draw loops (use tb)');
+  return problem;
 }
 
+// ---------- WRAP ----------
+// A plain chain too long for one row snakes onto the next rows:
+//   a ─→ b ─→ c ─┐
+//   ┌────────────┘
+//   └─→ d ─→ e
+function renderWrapped(spec, budget) {
+  const labels = spec.flow.map(String);
+  const rows = [];
+  let cur = [];
+  for (const label of labels) {
+    const candidate = [...cur, label];
+    const text = (rows.length ? '└─→ ' : '') + candidate.join(' ─→ ') + ' ─┐';
+    if (cur.length && dw(text) > budget) { rows.push(cur); cur = [label]; }
+    else cur = candidate;
+  }
+  rows.push(cur);
+  const lines = [];
+  rows.forEach((r, i) => {
+    const last = i === rows.length - 1;
+    const line = (i ? '└─→ ' : '') + r.join(' ─→ ') + (last ? '' : ' ─┐');
+    lines.push(line);
+    if (!last) lines.push('┌' + '─'.repeat(dw(line) - 2) + '┘');
+  });
+  return lines.join('\n');
+}
 
 // ---------- LR ----------
 
@@ -300,9 +344,6 @@ function renderTB(spec) {
   for (const it of items) {
     if (typeof it === 'object' && Array.isArray(it.parallel)) {
       const labels = it.parallel.map(branchText);
-      if (labels.length > 3) {
-        fail('tb mode supports at most 3 parallel branches (use "lr")');
-      }
       maxW = Math.max(maxW, labels.reduce((s, l) => s + dw(l), 0) + GAP * (labels.length - 1));
     } else maxW = Math.max(maxW, dw(branchText(it)));
   }
@@ -385,7 +426,15 @@ function renderTB(spec) {
 
 // ---------- entry ----------
 function main() {
-  const arg = process.argv[2];
+  const argv = process.argv.slice(2);
+  let cliWidth;
+  const wi = argv.indexOf('--width');
+  if (wi >= 0) {
+    cliWidth = Number(argv[wi + 1]);
+    if (!Number.isInteger(cliWidth) || cliWidth < 20) fail('--width must be an integer of at least 20');
+    argv.splice(wi, 2);
+  }
+  const arg = argv[0];
   if (arg === '-h' || arg === '--help') { console.log(USAGE); process.exit(0); }
   let src;
   if (!arg || arg === '-') src = readFileSync(0, 'utf8');
@@ -399,22 +448,47 @@ function main() {
   try { spec = JSON.parse(src); }
   catch (e) { fail('invalid JSON: ' + e.message); }
 
-  const dir = spec.dir ?? 'lr';
-  if (!['lr', 'tb', 'tree'].includes(dir)) fail(`unknown "dir": "${dir}" (use lr, tb, or tree)`);
+  const requested = spec.dir ?? 'auto';
+  if (!['auto', 'lr', 'tb', 'tree'].includes(requested)) fail(`unknown "dir": "${requested}" (use auto, lr, tb, or tree)`);
   if (!Array.isArray(spec.flow) || spec.flow.length === 0) fail('"flow" must be a non-empty array');
-  validate(spec.flow, dir);
+  const budget = cliWidth ?? spec.width ?? 80;
+  if (!Number.isInteger(budget) || budget < 20) fail('"width" must be an integer of at least 20');
   for (const loop of spec.loops ?? []) {
     if (typeof loop?.from !== 'string' || typeof loop?.to !== 'string') fail('each loop needs string "from" and "to"');
     if (loop.from === loop.to) fail(`self-loop on "${loop.from}" is not supported; loops need two distinct nodes`);
-    if (dir === 'tree') fail('"loops" are not supported in tree mode (use lr or tb)');
   }
 
-  const out = dir === 'tb' ? renderTB(spec)
-    : dir === 'tree' ? renderTree(spec)
-    : renderLR(spec);
-  const width = Math.max(...out.split('\n').map(l => dw(l)));
-  if (dir === 'lr' && width > 110) {
-    console.error(`arrow-diagram: ${width} columns wide — deep branch nesting reads better with "dir": "tree"`);
+  const widthOf = text => Math.max(...text.split('\n').map(l => dw(l)));
+  const attempt = mode => {
+    const problem = modeProblem(spec, mode);
+    if (problem) return { mode, problem };
+    const text = mode === 'tb' ? renderTB(spec) : mode === 'tree' ? renderTree(spec)
+      : mode === 'wrap' ? renderWrapped(spec, budget) : renderLR(spec);
+    return { mode, text, width: widthOf(text) };
+  };
+
+  let out;
+  if (requested === 'auto') {
+    // Narrowest readable mode that fits the budget, in order of preference.
+    const tried = [];
+    for (const mode of ['lr', 'wrap', 'tree', 'tb']) {
+      const r = attempt(mode); tried.push(r);
+      if (r.text && r.width <= budget) { out = r.text; break; }
+    }
+    if (!out) {
+      const why = tried.map(r => `${r.mode}: ${r.problem ?? `${r.width} columns`}`).join('; ');
+      fail(`no mode fits ${budget} columns (${why}). Shorten labels, raise "width", or split the diagram`);
+    }
+  } else {
+    const r = attempt(requested);
+    if (r.problem) fail(r.problem);
+    out = r.text;
+    if (r.width > budget) {
+      const fits = ['lr', 'wrap', 'tree', 'tb'].filter(m => m !== requested)
+        .map(attempt).filter(a => a.text && a.width <= budget).map(a => a.mode);
+      console.error(`arrow-diagram: ${r.width} columns wide, over the ${budget}-column budget; it will wrap in a chat code block.`
+        + (fits.length ? ` Fits in: ${fits.map(m => `"dir": "${m}"`).join(', ')}.` : ' No other mode fits; shorten labels or split the diagram.'));
+    }
   }
   process.stdout.write(out.replace(/[ ]+$/gm, '') + '\n');
 }

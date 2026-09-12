@@ -1,11 +1,15 @@
 # arrow-diagram — stress gallery
 
+The first three entries pin `"dir": "lr"` on purpose: they are width stress
+cases and would otherwise auto-switch to a narrower mode.
+
 Every diagram below was produced by `render.mjs` from the JSON above it. No hand alignment.
 
 ## Deep nested branch tree (5 levels of refusal)
 
 ```json
 {
+  "dir": "lr",
   "flow": [
     "user: cancel",
     "objection 1: metrics",
@@ -70,6 +74,7 @@ user: cancel ─→ objection 1: metrics ──┬─→ persuaded ✓
 
 ```json
 {
+  "dir": "lr",
   "flow": [
     "webhook",
     "verify signature",
@@ -101,6 +106,7 @@ webhook ─→ verify signature ──┬─→ invalid → 401
 
 ```json
 {
+  "dir": "lr",
   "flow": [
     "spec",
     {
@@ -591,4 +597,75 @@ plan ──┤       ↑       ├─→ review ─→ merge
   ↑    └─→ manual ────────┘     │
   │                             │
   └────────── 再申請 ───────────┘
+```
+
+## Width budget: a chain with loops that would be 129 columns in lr
+
+No `dir` given, default budget 80. In `lr` this is 129 columns and soft-wraps
+into garbage inside a chat code block; auto mode picks `tb`, the first mode
+that fits.
+
+```json
+{
+  "flow": [
+    "plan (you + me)",
+    "packet",
+    "cx execute (memories on)",
+    "my gates: typecheck + tests",
+    "consult.mjs review (memories off)",
+    "land"
+  ],
+  "loops": [
+    {
+      "from": "consult.mjs review (memories off)",
+      "to": "cx execute (memories on)",
+      "label": "cx say: corrections"
+    },
+    {
+      "from": "land",
+      "to": "packet",
+      "label": "findings, revise"
+    }
+  ]
+}
+```
+
+```
+         plan (you + me)
+                ↓
+             packet ←─────────────────────────────────────┐
+                ↓                                         │
+    cx execute (memories on) ←─────┐                      │
+                ↓                  │                      │
+   my gates: typecheck + tests     │ cx say: corrections  │ findings, revise
+                ↓                  │                      │
+consult.mjs review (memories off) ─┘                      │
+                ↓                                         │
+              land ───────────────────────────────────────┘
+```
+
+## Width budget: a plain chain wraps into a snake
+
+```json
+{
+  "flow": [
+    "receive request",
+    "validate schema",
+    "authenticate caller",
+    "load tenant config",
+    "apply rate limit",
+    "dispatch to handler",
+    "serialize response",
+    "emit metrics",
+    "send"
+  ]
+}
+```
+
+```
+receive request ─→ validate schema ─→ authenticate caller ─┐
+┌──────────────────────────────────────────────────────────┘
+└─→ load tenant config ─→ apply rate limit ─→ dispatch to handler ─┐
+┌──────────────────────────────────────────────────────────────────┘
+└─→ serialize response ─→ emit metrics ─→ send
 ```
