@@ -669,3 +669,50 @@ receive request ─→ validate schema ─→ authenticate caller ─┐
 ┌──────────────────────────────────────────────────────────────────┘
 └─→ serialize response ─→ emit metrics ─→ send
 ```
+
+## Interleaved loops cross with ┼; nested loops do not
+
+L1 (e→a) and L2 (f→d) interleave, so L2's channel must pass through L1's
+arc; the crossing is drawn and the label keeps a dash clear of it. The inner
+loop (c→b) nests cleanly.
+
+```json
+{
+  "flow": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f"
+  ],
+  "loops": [
+    {
+      "from": "c",
+      "to": "b",
+      "label": "in"
+    },
+    {
+      "from": "e",
+      "to": "a",
+      "label": "L1"
+    },
+    {
+      "from": "f",
+      "to": "d",
+      "label": "L2"
+    }
+  ]
+}
+```
+
+```
+a ─→ b ─→ c ─→ d ─→ e ─→ f
+↑    ↑    │    ↑    │    │
+│    └ in ┘    │    │    │
+│              │    │    │
+└─────── L1 ───┼────┘    │
+               │         │
+               └── L2 ───┘
+```
+

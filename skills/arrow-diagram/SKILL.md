@@ -111,6 +111,13 @@ prompt ─→ agent ─→ tests ─→ review ─→ merge
 A loop whose `from` precedes its `to` (a skip-ahead) draws the same way,
 with the arrowhead under the destination.
 
+Loops are stacked in spec order, each arc one band lower. Nested loops (one
+span inside another) never touch. Interleaved loops (spans that overlap
+without nesting) must cross, because the later loop's channel runs down
+through the earlier arc; the crossing is drawn as `┼` and labels are placed
+clear of it. A label too long for its span hangs to the right of the arc,
+or drops below when another channel is in the way.
+
 ## Choosing a direction
 
 | `dir` | Use when | Supports |

@@ -251,12 +251,22 @@ function renderLR(spec) {
     let col = 0, i = 0;
     const cps = [...line];
     while (i < cps.length && col < x) { col += dw(cps[i]); i++; }
-    if (col !== x || cps[i] !== ' ') return;   // inside a wide glyph, or occupied
-    cps[i] = ch;
+    if (col !== x) return;                     // inside a wide glyph
+    if (cps[i] === '─' && ch === '│') cps[i] = '┼';   // channel crosses an earlier arc
+    else if (cps[i] !== ' ') return;           // occupied by text: leave it
+    else cps[i] = ch;
     lines[row] = cps.join('');
   };
 
-  for (const loop of spec.loops ?? []) {
+  const loops = spec.loops ?? [];
+  const at0 = label => built.nodes.find(n => n.label === label);
+  const colOf = n => n ? n.x + Math.floor(dw(n.label) / 2) : -1;
+  // Channels of loops drawn later run down through this loop's arc row, so
+  // their columns are crossings on this arc; earlier loops stop above it.
+  const crossingsAfter = i => new Set(loops.slice(i + 1).flatMap(l => [colOf(at0(l.from)), colOf(at0(l.to))]));
+
+  for (const [li, loop] of loops.entries()) {
+    const channelCols = crossingsAfter(li);
     // Endpoints resolve against node positions recorded during layout, so
     // "agent" never lands inside "coding agent" and labels may contain spaces.
     const at = label => {
@@ -280,11 +290,33 @@ function renderLR(spec) {
 
     const label = loop.label ?? '';
     const span = Math.max(hi - lo - 1, 0);
-    const inline = label && dw(label) + 2 <= span;
-    const fill = inline ? centerIn('─', span, ' ' + label + ' ') : '─'.repeat(span);
-    lines.push(' '.repeat(lo) + '└' + fill + '┘');
-    if (label && !inline) {
-      const start = Math.max(Math.floor((lo + hi) / 2) - Math.floor(dw(label) / 2), 0);
+    const lw = dw(label);
+    // A label must not sit on a column where another loop's channel crosses
+    // this arc, or it would hide the ┼. Try centred, then slide within the
+    // span; otherwise hang it to the right of the arc; otherwise drop below.
+    const clear = (start, width) => {   // label cells plus one dash on each side
+      for (let c = start - 1; c <= start + width; c++) if (c !== lo && c !== hi && channelCols.has(c)) return false;
+      return true;
+    };
+    let fill = '─'.repeat(span);
+    let placed = false;
+    if (label && lw + 2 <= span) {
+      const centre = lo + 1 + Math.floor((span - lw - 2) / 2);
+      const candidates = [centre];
+      for (let d = 1; d <= span; d++) candidates.push(centre - d, centre + d);
+      for (const st of candidates) {
+        if (st < lo + 1 || st + lw + 2 > hi) continue;
+        if (!clear(st, lw + 2)) continue;
+        fill = '─'.repeat(st - lo - 1) + ' ' + label + ' ' + '─'.repeat(hi - (st + lw + 2));
+        placed = true;
+        break;
+      }
+    }
+    let arc = ' '.repeat(lo) + '└' + fill + '┘';
+    if (label && !placed && clear(hi + 1, lw + 1)) { arc += ' ' + label; placed = true; }
+    lines.push(arc);
+    if (label && !placed) {
+      const start = Math.max(Math.floor((lo + hi) / 2) - Math.floor(lw / 2), 0);
       lines.push(' '.repeat(start) + label);
     }
   }

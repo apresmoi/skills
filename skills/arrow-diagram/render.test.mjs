@@ -184,3 +184,39 @@ test("when no mode fits, every mode's reason is reported", () => {
   const r = render({ flow: ["a"] }, "--width", "5");
   assert.equal(r.code, 2); assert.match(r.err, /--width must be/);
 });
+
+// ---- loop crossings and label placement ----
+test("interleaved loops draw a crossing and keep the label off it", () => {
+  assert.equal(ok({ flow: ["a", "b", "c", "d", "e"], loops: [{ from: "d", to: "a", label: "L1" }, { from: "e", to: "b", label: "L2" }] }), [
+    "a ─→ b ─→ c ─→ d ─→ e",
+    "↑    ↑         │    │",
+    "└────┼─ L1 ────┘    │",
+    "     │              │",
+    "     └───── L2 ─────┘",
+  ].join("\n"));
+  assert.equal(ok({ flow: ["a", "b", "c", "d", "e", "f"], loops: [{ from: "c", to: "b", label: "in" }, { from: "e", to: "a", label: "L1" }, { from: "f", to: "d", label: "L2" }] }), [
+    "a ─→ b ─→ c ─→ d ─→ e ─→ f",
+    "↑    ↑    │    ↑    │    │",
+    "│    └ in ┘    │    │    │",
+    "│              │    │    │",
+    "└─────── L1 ───┼────┘    │",
+    "               │         │",
+    "               └── L2 ───┘",
+  ].join("\n"));
+});
+
+test("a label too long for its span hangs right of the arc, or below if that is blocked", () => {
+  assert.equal(ok({ flow: ["a", "b", "c"], loops: [{ from: "b", to: "a", label: "retry" }] }), [
+    "a ─→ b ─→ c",
+    "↑    │",
+    "└────┘ retry",
+  ].join("\n"));
+  assert.equal(ok({ flow: ["a", "b", "c", "d"], loops: [{ from: "b", to: "a", label: "retry" }, { from: "d", to: "c", label: "x" }] }), [
+    "a ─→ b ─→ c ─→ d",
+    "↑    │    ↑    │",
+    "└────┘    │    │",
+    "retry     │    │",
+    "          │    │",
+    "          └ x ─┘",
+  ].join("\n"));
+});
