@@ -17,6 +17,7 @@ ROOT = Path(os.environ.get("HARNESS_ROOT", "/content/harness"))
 JOBS_DIR = ROOT / "jobs"
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 VLLM_PORT = 8000
+VLLM_VENV = Path(os.environ.get("HARNESS_VLLM_VENV", "/content/vllm-venv"))
 STARTED = time.time()
 
 app = FastAPI(title="colab-harness")
@@ -241,7 +242,8 @@ def vllm_status() -> dict:
         except Exception:  # noqa: BLE001
             ready = False
     return {"running": alive, "ready": ready, "model": _vllm["model"] if alive else None,
-            "exit_code": None if alive or proc is None else proc.returncode}
+            "exit_code": None if alive or proc is None else proc.returncode,
+            "installed": (VLLM_VENV / "bin" / "python").exists()}
 
 
 @app.post("/vllm/start")
@@ -252,7 +254,13 @@ def vllm_start(body: dict):
     if not model:
         raise HTTPException(400, "body.model required")
     extra = body.get("args", [])
-    cmd = ["python", "-m", "vllm.entrypoints.openai.api_server", "--model", model, "--port", str(VLLM_PORT),
+    # vLLM pins its own torch; installing it into Colab's interpreter breaks the
+    # torch/torchaudio CUDA pairing there. It lives in its own venv instead.
+    py = VLLM_VENV / "bin" / "python"
+    if not py.exists():
+        raise HTTPException(409, f"vllm venv missing at {VLLM_VENV}; create it with a shell job: "
+                                 f"python -m venv {VLLM_VENV} && {VLLM_VENV}/bin/pip install -q vllm")
+    cmd = [str(py), "-m", "vllm.entrypoints.openai.api_server", "--model", model, "--port", str(VLLM_PORT),
            "--host", "127.0.0.1", "--api-key", TOKEN, "--gpu-memory-utilization", str(body.get("gpu_memory_utilization", 0.9))]
     if body.get("max_model_len"):
         cmd += ["--max-model-len", str(body["max_model_len"])]

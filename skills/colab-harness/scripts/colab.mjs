@@ -9,11 +9,13 @@ import process from "node:process";
 
 const HOME = path.join(process.env.COLAB_HARNESS_HOME ?? path.join(homedir(), ".colab-harness"));
 const SESSION = path.join(HOME, "session.json");
+const TOKEN_FILE = path.join(HOME, "token");
 const CHUNK = 8 * 1024 * 1024; // well under the tunnel's per-request cap
 
 const USAGE = `colab-harness — use a Colab GPU runtime from here.
 
-  node colab.mjs connect <url> <token>       save this session (printed by the notebook)
+  node colab.mjs init                        generate the shared token once (store it as Colab secret HARNESS_TOKEN)
+  node colab.mjs connect <url> [token]       save this session; token defaults to the one from init
   node colab.mjs status                      health: GPU, jobs, vLLM
   node colab.mjs run "<shell command>"       run a command on the VM (waits, prints output)
   node colab.mjs transcribe <audio> [--model large-v3] [--language es] [--compute-type float16] [--out DIR]
@@ -24,6 +26,7 @@ const USAGE = `colab-harness — use a Colab GPU runtime from here.
   node colab.mjs vllm status | stop
   node colab.mjs chat "<prompt>" [--model M] one non-streamed completion through the tunnel
   node colab.mjs env                         print OPENAI_BASE_URL / OPENAI_API_KEY for other clients
+  node colab.mjs reload                      push the local harness_server.py to the VM and restart it
 
 Exit 0 on success, 1 on a failed job or unreachable session, 2 on usage errors.`;
 
@@ -104,9 +107,25 @@ const main = async () => {
   const [cmd, ...rest] = pos;
   if (!cmd || cmd === "--help" || cmd === "-h") { console.log(USAGE); return; }
 
+  if (cmd === "init") {
+    const { randomBytes } = await import("node:crypto");
+    await mkdir(HOME, { recursive: true, mode: 0o700 });
+    let exists = true;
+    try { await stat(TOKEN_FILE); } catch { exists = false; }
+    if (exists && !opt.force) { console.log(`token already exists at ${TOKEN_FILE} (use --force to rotate)`); return; }
+    await writeFile(TOKEN_FILE, randomBytes(24).toString("base64url") + "\n", { mode: 0o600 });
+    console.log(`token written to ${TOKEN_FILE} (not printed).\nCopy it:   pbcopy < ${TOKEN_FILE}\nThen in Colab: 🔑 Secrets → add HARNESS_TOKEN, paste, enable notebook access.`);
+    return;
+  }
+
   if (cmd === "connect") {
-    const [url, token] = rest;
-    if (!url || !token) die("usage: connect <url> <token>");
+    const [url, tokenArg] = rest;
+    if (!url) die("usage: connect <url> [token]");
+    let token = tokenArg;
+    if (!token) {
+      try { token = (await readFile(TOKEN_FILE, "utf8")).trim(); }
+      catch { die("no token given and none stored; run: node colab.mjs init"); }
+    }
     const session = { url: url.replace(/\/+$/, ""), token, connected_at: new Date().toISOString() };
     await mkdir(HOME, { recursive: true, mode: 0o700 });
     await writeFile(SESSION, JSON.stringify(session, null, 2) + "\n", { mode: 0o600 });
@@ -164,11 +183,10 @@ const main = async () => {
     if (sub === "stop") { console.log(JSON.stringify(await api(session, "POST", "/vllm/stop"))); return; }
     if (sub === "start") {
       if (!model) die("usage: vllm start <model>");
-      const probe = await submit(session, "shell", { cmd: "python -c 'import vllm, sys; print(vllm.__version__)'", timeout: 120 });
-      const p = await waitJob(session, probe.id, { quiet: true });
-      if (p.result?.exit_code !== 0) {
-        console.error("vllm not installed on the VM; installing (several minutes)…");
-        const inst = await submit(session, "shell", { cmd: "pip install -q vllm", timeout: 1800 });
+      const st0 = await api(session, "GET", "/vllm/status");
+      if (!st0.installed) {
+        console.error("vllm not installed on the VM; installing into its own venv (several minutes)…");
+        const inst = await submit(session, "shell", { cmd: "python -m venv /content/vllm-venv && /content/vllm-venv/bin/pip install -q --upgrade pip && /content/vllm-venv/bin/pip install -q vllm", timeout: 2400 });
         const r = await waitJob(session, inst.id, { quiet: true });
         if (r.result?.exit_code !== 0) die(`vllm install failed:\n${r.result?.stderr_tail}`, 1);
       }
@@ -184,6 +202,20 @@ const main = async () => {
       }
     }
     die("usage: vllm start <model> | status | stop");
+  }
+
+  if (cmd === "reload") {
+    const src = await readFile(new URL("./harness_server.py", import.meta.url), "utf8");
+    const b64 = Buffer.from(src).toString("base64");
+    const script = `echo ${b64} | base64 -d > /content/harness_server.py && python -c "import ast; ast.parse(open('/content/harness_server.py').read())" && (sleep 1; pkill -f '[h]arness_server.py'; sleep 1; cd /content && setsid nohup python /content/harness_server.py > /content/harness_server.log 2>&1 &) && echo scheduled`;
+    await submit(session, "shell", { cmd: script, timeout: 60 });
+    console.error("restarting the VM server…");
+    for (let i = 0; i < 30; i++) {
+      await sleep(2000);
+      const res = await fetch(session.url + "/health", { headers: { authorization: `Bearer ${session.token}` } }).catch(() => null);
+      if (res?.ok) { console.log("server reloaded; uptime", (await res.json()).uptime_s, "s"); return; }
+    }
+    die("server did not come back after reload; rerun cell 3 in the notebook", 1);
   }
 
   if (cmd === "chat") {

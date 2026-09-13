@@ -16,11 +16,15 @@ const cells = [
 
 Turns this Colab runtime into a job server reachable from your machine. Pick a
 **GPU runtime** first (Runtime → Change runtime type → L4 or T4), then
-**Runtime → Run all**. The last cell prints one line to paste locally:
+**Runtime → Run all**. The tunnel cell prints one line to run locally:
 
 \`\`\`
-node colab.mjs connect <url> <token>
+node colab.mjs connect <url>
 \`\`\`
+
+One-time setup: run \`node colab.mjs init\` locally, copy the token it stores
+(\`pbcopy < ~/.colab-harness/token\`), and add it in the 🔑 Secrets panel as
+\`HARNESS_TOKEN\` with notebook access on. The token is then never printed.
 
 Keep this tab open: the final cell loops to keep the session alive. Close it
 (or Runtime → Disconnect) to end the session. The server binds to loopback and
@@ -35,7 +39,18 @@ HARNESS_PORT = 8787
 
 import os, secrets
 from pathlib import Path
-HARNESS_TOKEN = secrets.token_urlsafe(24)
+# The token comes from Colab Secrets (🔑 panel, name HARNESS_TOKEN, notebook access ON),
+# generated locally by  node colab.mjs init  and pasted there once. It is then never
+# printed. Without the secret, a one-off token is generated and printed as a fallback.
+TOKEN_FROM_SECRET = False
+try:
+    from google.colab import userdata
+    HARNESS_TOKEN = userdata.get("HARNESS_TOKEN")
+    TOKEN_FROM_SECRET = bool(HARNESS_TOKEN)
+except Exception:
+    HARNESS_TOKEN = None
+if not HARNESS_TOKEN:
+    HARNESS_TOKEN = secrets.token_urlsafe(24)
 if MOUNT_DRIVE:
     from google.colab import drive
     drive.mount("/content/drive")
@@ -43,7 +58,7 @@ if MOUNT_DRIVE:
     (cache / "_hf_home").mkdir(parents=True, exist_ok=True)
     os.environ["HF_HOME"] = str(cache / "_hf_home")
     print("HF_HOME ->", os.environ["HF_HOME"])
-print("token generated (printed with the tunnel URL in the last cell)")
+print("token: from Colab secret HARNESS_TOKEN" if TOKEN_FROM_SECRET else "token: generated for this session (no HARNESS_TOKEN secret set; it will be printed with the URL)")
 `),
   code(`#@title 2) Install dependencies
 import subprocess, sys
@@ -81,8 +96,11 @@ for _ in range(60):
     time.sleep(1)
 if not url:
     raise SystemExit("no tunnel URL yet; see /content/cloudflared.log")
-print("\\nPaste this on your machine:\\n")
-print(f"  node colab.mjs connect {url} {HARNESS_TOKEN}\\n")
+print("\\nOn your machine:\\n")
+if TOKEN_FROM_SECRET:
+    print(f"  node colab.mjs connect {url}\\n")
+else:
+    print(f"  node colab.mjs connect {url} {HARNESS_TOKEN}\\n")
 `),
   code(`#@title 5) Keep alive (leave running)
 import time, urllib.request, json
