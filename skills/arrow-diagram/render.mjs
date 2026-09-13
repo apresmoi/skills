@@ -491,7 +491,8 @@ function renderTB(spec) {
       const base = lines[r].trimEnd();
       if (r === fromRow || r === toRow) {
         const head = r === toRow ? ' ←' : ' ';
-        const fill = '─'.repeat(Math.max(col - dw(base) - head.length, 1));
+        // no forced minimum dash: on the widest row the corner must land exactly at col
+        const fill = '─'.repeat(Math.max(col - dw(base) - head.length, 0));
         lines[r] = base + head + fill + (r === top ? '┐' : '┘');
       } else {
         lines[r] = padTo(base, col) + '│';

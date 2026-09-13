@@ -274,3 +274,11 @@ test("lenient inputs: numeric loop labels and uppercase dir", () => {
   assert.equal(ok({ flow: ["a", "b"], loops: [{ from: "b", to: "a", label: 42 }] }), "a ─→ b\n↑    │\n└ 42 ┘");
   assert.equal(ok({ dir: "TB", flow: ["a", "b"] }), "a\n↓\nb");
 });
+
+test("tb loop corners align when the endpoint is the widest row", () => {
+  const out = ok({ flow: ["token x_t", "encoder → KV memory", "merge(e_t, s_{t-1})", "48-layer decoder", "state H_t", "predict x_{t+1}"], loops: [{ from: "state H_t", to: "merge(e_t, s_{t-1})", label: "next token; never reset" }] });
+  const lines = out.split("\n");
+  const col = (l, ch) => [...l].indexOf(ch);
+  const corner = col(lines[2], "┐"), rail = col(lines[3], "│"), bottom = col(lines[6], "┘");
+  assert.equal(corner, rail); assert.equal(bottom, rail);
+});
