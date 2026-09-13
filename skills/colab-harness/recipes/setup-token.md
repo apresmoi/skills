@@ -21,11 +21,12 @@ works with a T4 but disconnects sooner).
    Left sidebar → 🔑 key icon ("Secrets") → **+ Add new secret** →
    Name `HARNESS_TOKEN`, Value: paste → switch on **Notebook access**.
    An agent may open the panel and fill the name; it must not paste the value.
-3. Verify on the next session start: cell 1 prints
-   `token: from Colab secret HARNESS_TOKEN`. If it prints
-   `generated for this session`, the secret is missing or its toggle is off;
-   the notebook then falls back to a one-off token and prints it with the
-   URL, which works for that session only.
+3. Verify: `node colab.mjs check` shows `harness token: OK`. Whether the
+   Colab secret matches is only provable by a start: with the playwright
+   starter, `start` fails with `SECRET_MISSING` when the secret is absent or
+   its notebook-access toggle is off, and `connect` gets a 401 if the value
+   differs; with the chrome starter, cell 1 prints
+   `token: from Colab secret HARNESS_TOKEN` on success.
 
 ## Rotate
 

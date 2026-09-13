@@ -43,6 +43,8 @@ Playwright is not installed by this skill. It is resolved from
 listed as `playwright_roots` in `~/.colab-harness/config.json`. The real
 Google Chrome is used (channel `chrome`), nothing is downloaded.
 
+Verify: `node colab.mjs check` shows `playwright: OK` and `google auth: OK · signed in: <account>`.
+
 ## Debug: auth lost
 
 - `start` fails with `AUTH_EXPIRED`, or `auth status` says not signed in:
@@ -58,7 +60,7 @@ Google Chrome is used (channel `chrome`), nothing is downloaded.
   skill's profile, not the user's Chrome.
 - `start` fails with `COLAB: Cannot connect to GPU backend`: no L4 free or
   the allowance is spent; retry later or `--gpu T4`.
-- `check` prints the starter, its sign-in state and the next command.
+- Anything else: `recipes/troubleshooting.md`, indexed by the error text.
 
 ## Chrome starter
 

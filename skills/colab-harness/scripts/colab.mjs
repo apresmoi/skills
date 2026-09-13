@@ -23,7 +23,8 @@ const CHUNK = 8 * 1024 * 1024; // well under the tunnel's per-request cap
 const USAGE = `colab-harness — use a Colab GPU runtime from here.
 
   node colab.mjs init                        generate the shared token once (store it as Colab secret HARNESS_TOKEN)
-  node colab.mjs check                       START HERE: what is configured, what is up, what to do next
+  node colab.mjs check                       START HERE: every prerequisite as OK/WARN/MISSING with its fix, runtimes up,
+                                             and the next command. Exit 0 ready, 1 no runtime, 2 setup incomplete.
   node colab.mjs start [--via playwright|chrome] [--gpu L4] [--headed]
                                              start a runtime with no human: playwright drives a dedicated Google-signed-in
                                              Chrome profile headless; chrome means the agent drives the Claude extension
@@ -491,33 +492,51 @@ repeat steps 2 and 3.`); return;
     die("start: no tunnel URL after 7 min; see " + logFile, 1);
   }
 
-  if (cmd === "check") {
-    // The readiness report an agent runs first: what is configured, what is up, what to do next.
-    let ok = true; const say = (line) => console.log(line);
-    const nbUrl = "https://colab.research.google.com/github/apresmoi/skills/blob/main/skills/colab-harness/Colab_Harness.ipynb";
-    let token = null; try { token = (await readFile(TOKEN_FILE, "utf8")).trim(); say("harness token: present (~/.colab-harness/token; must also be the Colab secret HARNESS_TOKEN)"); } catch { ok = false; say("harness token: MISSING → node colab.mjs init, then recipes/setup-token.md"); }
-    const tok = await hfLocalToken(); const who = tok ? await hfWhoami(tok) : null;
-    say(who?.name ? `hugging face (local): ${who.name} · ${who.auth?.accessToken?.role ?? "?"} token → bare \`connect\` and \`models sync\` work` : "hugging face (local): no login → \`connect\` needs the URL from the notebook; fix: hf auth login");
-    try { const st = await stat(YT_COOKIES); say(`youtube cookies: present (${st.size} bytes; \`cookies status\` for expiry)`); } catch { say("youtube cookies: none (only needed for youtube/pipeline; recipes/setup-youtube-cookies.md)"); }
-    const cat = await loadCatalog(); say(`catalog: ${cat.length} trained model${cat.length === 1 ? "" : "s"} (\`models\`)`);
+  if (cmd === "check" || cmd === "doctor") {
+    // The readiness report an agent runs first. Every line is  <what>: OK|WARN|MISSING · <detail> → <fix>.
+    // Exit 0: a runtime is up or published (use it). 1: configured, no runtime (start one). 2: setup incomplete.
+    const lines = []; let missing = 0, warn = 0;
+    const ok = (what, detail) => lines.push(`${what}: OK · ${detail}`);
+    const miss = (what, detail, fix) => { missing++; lines.push(`${what}: MISSING · ${detail} → ${fix}`); };
+    const wrn = (what, detail, fix) => { warn++; lines.push(`${what}: WARN · ${detail}${fix ? " → " + fix : ""}`); };
     const cfg = await loadConfig();
-    if (!cfg.starter) say("starter: NOT SET → ask the user once: playwright (headless, own Google profile) or chrome (the Claude extension); then: node colab.mjs config set starter <choice>");
-    else if (cfg.starter === "playwright" && await (async () => { try { const r = JSON.parse(await readFile(path.join(HOME, "last-start.json"), "utf8")); process.kill(r.pid, 0); return true; } catch { return false; } })()) say("starter: playwright · profile in use by the running runtime's tab (signed in)");
-    else if (cfg.starter === "playwright") { const st = await new Promise((r) => { const { execFile } = require_cp(); execFile(process.execPath, [path.join(SCRIPTS, "colab-start.mjs"), "status"], { timeout: 90000 }, (e, out) => r((out || "").trim() || "status check failed")); }); say(`starter: playwright · ${st}`); }
-    else say(`starter: chrome (the agent drives the Claude in Chrome extension; needs that tool in this session)`);
+    const major = Number(process.versions.node.split(".")[0]);
+    if (major >= 18) ok("node", `v${process.versions.node}`); else miss("node", `v${process.versions.node}`, "install Node 18 or newer");
+    let token = null; try { token = (await readFile(TOKEN_FILE, "utf8")).trim(); ok("harness token", "~/.colab-harness/token (the Colab secret HARNESS_TOKEN must hold the same value; only a start can prove it)"); } catch { miss("harness token", "no ~/.colab-harness/token", "node colab.mjs init, then recipes/setup-token.md"); }
+    const tok = await hfLocalToken(); const who = tok ? await hfWhoami(tok) : null;
+    if (who?.name) ok("hugging face (local)", `${who.name} · ${who.auth?.accessToken?.role ?? "?"} token · bare connect via the hub and models sync work`);
+    else wrn("hugging face (local)", tok ? "token rejected" : "no login", "hf auth login (or HF_TOKEN); until then connect only finds runtimes the local starter brought up");
+    const starter = cfg.starter;
+    if (!starter) miss("starter", "no preference", "ask the user once: playwright (headless, own cookie-seeded profile) or chrome (the Claude extension); node colab.mjs config set starter <choice>");
+    else if (starter === "chrome") ok("starter", "chrome · the agent drives the Claude in Chrome extension (needs that tool in this session and the same claude.ai account as the terminal); fallback: start --via playwright");
+    else if (starter === "playwright") {
+      let pwRoot = null; const roots = [process.env.PLAYWRIGHT_ROOT, path.join(SCRIPTS, ".."), ...(cfg.playwright_roots ?? []), process.cwd()].filter(Boolean);
+      for (const r of roots) { try { await stat(path.join(r, "node_modules", "playwright", "package.json")); pwRoot = r; break; } catch { /* next */ } }
+      if (pwRoot) ok("playwright", `resolved from ${pwRoot}`); else miss("playwright", "no install found", `set PLAYWRIGHT_ROOT or add a project with node_modules/playwright to "playwright_roots" in ${CONFIG_FILE}`);
+      let cookies = false; try { await stat(path.join(HOME, "google-cookies.txt")); cookies = true; } catch { /* none */ }
+      let held = false; try { const r = JSON.parse(await readFile(path.join(HOME, "last-start.json"), "utf8")); process.kill(r.pid, 0); held = true; } catch { /* not running */ }
+      if (!cookies) miss("google auth", "no ~/.colab-harness/google-cookies.txt", "send the user the steps from `node colab.mjs auth`, then they run `auth install`");
+      else if (held) ok("google auth", "profile in use by the running runtime's tab (signed in)");
+      else if (pwRoot) { const st = await new Promise((r) => execFile(process.execPath, [path.join(SCRIPTS, "colab-start.mjs"), "status"], { timeout: 90000 }, (e, out) => r((out || "").trim() || "status check failed"))); if (/^signed in/.test(st)) ok("google auth", st.replace(/\s+/g, " ")); else miss("google auth", st.replace(/\s+/g, " "), "re-export from google.com and `node colab.mjs auth install` (recipes/setup-starter.md)"); }
+    }
+    else miss("starter", `unknown value "${starter}"`, "node colab.mjs config set starter playwright|chrome");
+    try { await stat(YT_COOKIES); ok("youtube cookies", "present (optional; `cookies status` for expiry)"); } catch { lines.push("youtube cookies: none · optional, only youtube/pipeline need it (recipes/setup-youtube-cookies.md)"); }
+    const cat = await loadCatalog(); lines.push(`catalog: ${cat.length} trained model${cat.length === 1 ? "" : "s"} (\`models\`)`);
     const sessions = await savedSessions(); let live = 0;
-    for (const s of sessions) { const h = token ? await probe(s.url, s.token ?? token) : null; if (h) { live++; say(`session ${s.name}: UP · ${h.gpu?.name ?? "no gpu"} · lease ${Math.max(0, Math.floor(h.lease.expires_in_s / 60))} min · ${hfLine(h)}`); } else { say(`session ${s.name}: down (${s.url})`); await closeLedger(s.url); } }
-    if (!sessions.length) say("sessions: none saved");
+    for (const sess of sessions) { const h = token ? await probe(sess.url, sess.token ?? token) : null; if (h) { live++; lines.push(`session ${sess.name}: UP · ${h.gpu?.name ?? "no gpu"} · lease ${Math.max(0, Math.floor(h.lease.expires_in_s / 60))} min · jobs ${JSON.stringify(h.jobs)} · ${hfLine(h)}`); } else { lines.push(`session ${sess.name}: down (${sess.url})`); await closeLedger(sess.url); } }
+    if (!sessions.length) lines.push("sessions: none saved");
     let published = 0;
-    if (who?.name && token) { const d = await discoverRuntimes(); const bound = new Set(sessions.map((s) => s.url)); for (const r of d.runtimes ?? []) { if (bound.has(r.url)) continue; if (await probe(r.url, token)) { published++; say(`published runtime not yet connected: ${r.gpu} started ${r.started} → node colab.mjs connect`); } else await retireRuntime(d, r.file); } }
-    say("");
-    if (live) say(`READY: ${live} runtime${live === 1 ? "" : "s"} up. Use it, then \`release\`.`);
-    else if (published) say("READY TO CONNECT: run \`node colab.mjs connect\`.");
-    else if (ok && cfg.starter === "playwright") say("NO RUNTIME. Start one: node colab.mjs start   (then: node colab.mjs connect)");
-    else if (ok && cfg.starter === "chrome") { say("NO RUNTIME. Start one yourself with the Claude in Chrome extension: open"); say(`  ${nbUrl}`); say("  Runtime → Change runtime type → L4 · Run all · wait ~2 min · then: node colab.mjs connect"); say("No extension in this session? Use: node colab.mjs start --via playwright"); }
-    else if (ok) say("NO RUNTIME, and no starter preference. Ask the user which to use, save it with `config set starter`, then `start`.");
-    else say("NOT CONFIGURED: fix the items marked MISSING first (recipes/setup-token.md).");
-    process.exit(live || published ? 0 : 1);
+    if (who?.name && token) { const d = await discoverRuntimes(); const bound = new Set(sessions.map((x) => x.url)); for (const r of d.runtimes ?? []) { if (bound.has(r.url)) continue; if (await probe(r.url, token)) { published++; lines.push(`published runtime not yet connected: ${r.gpu} started ${r.started} → node colab.mjs connect`); } else await retireRuntime(d, r.file); } }
+    for (const l of lines) console.log(l);
+    console.log("");
+    let code;
+    if (live) { console.log(`READY: ${live} runtime${live === 1 ? "" : "s"} up. Use it, then \`release\`.`); code = 0; }
+    else if (published) { console.log("READY TO CONNECT: node colab.mjs connect"); code = 0; }
+    else if (missing) { console.log(`NOT CONFIGURED: ${missing} item${missing === 1 ? "" : "s"} marked MISSING above, each with its fix. Setup order: recipes/setup-token.md → setup-hf.md → setup-starter.md.`); code = 2; }
+    else if (starter === "chrome") { console.log("NO RUNTIME. Start one yourself with the Claude in Chrome extension: open the notebook, Runtime → Change runtime type → L4, Run all, then: node colab.mjs connect. No extension here? node colab.mjs start --via playwright"); code = 1; }
+    else { console.log("NO RUNTIME. Start one: node colab.mjs start   (then: node colab.mjs connect). Problems: recipes/troubleshooting.md"); code = 1; }
+    if (warn) console.log(`(${warn} warning${warn === 1 ? "" : "s"} above)`);
+    process.exit(code);
   }
 
   if (cmd === "models") {

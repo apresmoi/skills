@@ -27,9 +27,13 @@ instruction is "run X on Colab". Everything else is the agent's job:
       agent: node colab.mjs release ────────────┘
 ```
 
-**Start every task with `node colab.mjs check`.** It reports what is
-configured, whether a runtime is up or published, and prints the exact next
-step. Its exit code is 0 when there is something to use.
+**Start every task with `node colab.mjs check`.** Every prerequisite comes
+back as OK, WARN or MISSING with its fix, then the runtimes that are up or
+published, then the next command. Exit 0: something to use. 1: configured,
+start a runtime. 2: setup incomplete; do the MISSING items in this order:
+`recipes/setup-token.md`, `recipes/setup-hf.md`, `recipes/setup-starter.md`
+(YouTube cookies only when a download is needed). Anything that fails after
+that: `recipes/troubleshooting.md`, indexed by the exact error text.
 
 Why there is a "start the runtime" step at all: Colab has no API to
 allocate a VM, so a browser must click Run all once per session, and every
@@ -51,6 +55,7 @@ them. Each task below has one recipe; read only the one you need.
 | Hugging Face token: gated models (Gemma, pyannote) and pushing adapters to private repos | `recipes/setup-hf.md` |
 | YouTube downloads: the cookie file | `recipes/setup-youtube-cookies.md` |
 | Start a session, connect, keep it alive, release it, run several | `recipes/session.md` |
+| Something failed: every error text seen so far, its cause and fix | `recipes/troubleshooting.md` |
 | Transcribe, diarize, download from YouTube, the one-command pipeline | `recipes/transcribe-diarize.md` |
 | Serve a model with vLLM and use it from any OpenAI client | `recipes/vllm.md` |
 | Run a script on the VM: LoRA training, DSPy compile, anything; keep the result with `--push` (private HF repo); the catalog of trained models (`models list/search/show`) | `recipes/train-and-scripts.md` |
@@ -106,8 +111,9 @@ them. Each task below has one recipe; read only the one you need.
 
 ## Verified
 
-All of the above was exercised live on a Colab Pro L4 on 2026-09-13,
-including throughput numbers and the kill switch; details per recipe.
-Also verified live: YouTube download with a real cookie file, and a `--push`
-to a private Hugging Face repo. Untested: gated models through vLLM, and the
-catalog metadata on a real hub card (unit-tested only).
+Exercised live on Colab Pro on 2026-09-13: every job kind, vLLM throughput,
+the kill switch, YouTube with a real cookie file, `--push` to a private
+Hugging Face repo with the catalog card, `models sync` from the hub, and
+the full zero-touch loop with the playwright starter (headless start,
+secret prompts answered, bare `connect`, `release`). Not yet verified: gated
+models through vLLM, and the streamed `fetch` retry against a slow tunnel.

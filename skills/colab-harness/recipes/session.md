@@ -145,6 +145,10 @@ so the next fresh session starts from the same code.
 
 ## If the tunnel dies
 
-Cloudflare quick tunnels have no uptime promise. Rerun cell 4 in the
-notebook, it prints a new URL; `connect` again. Jobs and files on the VM
-survive.
+Cloudflare quick tunnels have no uptime promise. `check` reports the
+session as down and closes its ledger entry. With the chrome starter, rerun
+cell 4 in the notebook for a new URL and `connect` again; jobs and files on
+the VM survive. With the playwright starter there is no way to rerun a cell
+headless, so `release` (or `scripts/colab-start.mjs stop`) and `start`
+again; anything not fetched or pushed is lost with the VM, which is why
+long jobs push their results (`--push`) rather than rely on `fetch`.
