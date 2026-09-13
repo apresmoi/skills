@@ -330,7 +330,9 @@ def run_diarize(job: dict) -> dict:
     worker.write_text(PYANNOTE_WORKER)
     args = [str(PYANNOTE_VENV / "bin" / "python"), str(worker), str(d / job["input"]), str(d),
             p.get("pipeline", "pyannote/speaker-diarization-3.1"), str(p.get("group_threshold", 3.0)), str(p.get("num_speakers") or "")]
-    proc = subprocess.run(args, capture_output=True, text=True, timeout=int(p.get("timeout", 7200)))
+    # Colab's kernel exports MPLBACKEND=module://matplotlib_inline...; the venv's matplotlib rejects it.
+    env = dict(os.environ, MPLBACKEND="Agg")
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=int(p.get("timeout", 7200)), env=env)
     (d / "diarize.log").write_text(proc.stdout + proc.stderr)
     worker.unlink(missing_ok=True)
     if proc.returncode != 0:
