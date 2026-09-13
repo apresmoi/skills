@@ -36,8 +36,9 @@ const USAGE = `colab-harness — use a Colab GPU runtime from here.
   node colab.mjs pipeline <url|audio> [--language es] [--speakers N] [--out DIR]
                                              youtube (if url) → diarize → transcribe with speakers, one command
   node colab.mjs script <file.py|.sh> [--args "a b"] [--env K=V,K2=V2] [--python PATH] [--out DIR] [--push REPO [--push-dir adapter] [--public]]
-  node colab.mjs hf                              Hugging Face token on the VM: user, role, can it push (private repos)
-                                             upload and run a script on the VM (train, DSPy compile, ...)
+                                             upload and run a script on the VM (train, DSPy compile, ...);
+                                             --push uploads a folder to a PRIVATE Hugging Face repo when it succeeds
+  node colab.mjs hf                          Hugging Face token on the VM: user, role, can it push
   node colab.mjs keep [--minutes 120] [--dry-run]   extend the lease; prints the compute-unit cost of that time
   node colab.mjs cost                        this month's sessions, units, % of the monthly allowance, balance if seeded
   node colab.mjs budget set --monthly 100 --available <n>   seed the allowance and the balance from Colab's Resources panel
@@ -63,7 +64,7 @@ const parse = (argv) => {
   const pos = [], opt = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith("--")) { const n = argv[i + 1]; if (["follow", "no-open", "all", "no-cookies", "fetch-audio", "word-timestamps", "force", "dry-run", "public"].includes(a.slice(2)) || n === undefined || n.startsWith("--")) opt[a.slice(2)] = true; else { opt[a.slice(2)] = n; i++; } }
+    if (a.startsWith("--")) { const n = argv[i + 1]; if (["args", "vllm-args"].includes(a.slice(2)) && n !== undefined) { opt[a.slice(2)] = n; i++; continue; } if (["follow", "no-open", "all", "no-cookies", "fetch-audio", "word-timestamps", "force", "dry-run", "public"].includes(a.slice(2)) || n === undefined || n.startsWith("--")) opt[a.slice(2)] = true; else { opt[a.slice(2)] = n; i++; } }
     else pos.push(a);
   }
   return { pos, opt };
