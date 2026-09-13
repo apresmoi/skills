@@ -79,5 +79,6 @@ flags. Each task below has one recipe; read only the one you need.
 
 All of the above was exercised live on a Colab Pro L4 on 2026-09-13,
 including throughput numbers and the kill switch; details per recipe.
-Untested: a YouTube download with a valid cookie file, gated models through
-vLLM.
+Also verified live: YouTube download with a real cookie file, and a `--push`
+to a private Hugging Face repo. Untested: gated models through vLLM, and the
+catalog metadata on a real hub card (unit-tested only).
