@@ -104,8 +104,28 @@ for _ in range(60):
     time.sleep(1)
 if not url:
     raise SystemExit("no tunnel URL yet; see /content/cloudflared.log")
+# Publish the URL to a private Hugging Face dataset repo (<user>/colab-harness-state) so the
+# local CLI can find it with a bare  node colab.mjs connect  and nobody copies URLs by hand.
+STATE_REPO, STATE_FILE = None, None
+try:
+    if env.get("HF_TOKEN"):
+        from huggingface_hub import HfApi
+        import json as _json
+        _api = HfApi(token=env["HF_TOKEN"]); _me = _api.whoami()["name"]
+        STATE_REPO = f"{_me}/colab-harness-state"
+        _api.create_repo(STATE_REPO, repo_type="dataset", private=True, exist_ok=True)
+        _gpu = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True).stdout.strip() or "cpu"
+        STATE_FILE = f"runtimes/{int(time.time())}.json"
+        _rec = {"url": url, "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "gpu": _gpu, "token_from_secret": TOKEN_FROM_SECRET}
+        _api.upload_file(path_or_fileobj=_json.dumps(_rec).encode(), path_in_repo=STATE_FILE, repo_id=STATE_REPO, repo_type="dataset", commit_message="runtime up")
+except Exception as _e:
+    STATE_REPO = None
+    print("could not publish the URL to Hugging Face (copy it by hand):", str(_e)[:160])
 print("\\nOn your machine:\\n")
-if TOKEN_FROM_SECRET:
+if STATE_REPO and TOKEN_FROM_SECRET:
+    print(f"  node colab.mjs connect            # URL published to {STATE_REPO} (private); no copying needed")
+    print(f"  node colab.mjs connect {url}      # or explicitly\\n")
+elif TOKEN_FROM_SECRET:
     print(f"  node colab.mjs connect {url}\\n")
 else:
     print(f"  node colab.mjs connect {url} {HARNESS_TOKEN}\\n")
@@ -124,6 +144,12 @@ while True:
         print(time.strftime("%H:%M:%S"), f"lease {L['expires_in_s']//60:>3} min · jobs {h['jobs']} · vllm {h['vllm']['model'] or '-'} · gpu {h['gpu'].get('memory_used','?')}")
         if L["should_shutdown"]:
             print("lease expired with nothing running" if not L["shutdown"] else "release requested", "→ unassigning runtime")
+            try:
+                if STATE_REPO and STATE_FILE:
+                    from huggingface_hub import HfApi
+                    HfApi(token=env["HF_TOKEN"]).delete_file(STATE_FILE, repo_id=STATE_REPO, repo_type="dataset", commit_message="runtime down")
+            except Exception as _e:
+                print("could not retire the published URL:", str(_e)[:120])
             from google.colab import runtime
             runtime.unassign()
             break

@@ -1,23 +1,46 @@
 ---
 name: colab-harness
-description: Use a Google Colab GPU runtime (L4/T4, Colab Pro) as a job server from the local machine through a cloudflared tunnel, no browser automation — faster-whisper transcription, pyannote diarization, YouTube audio download, a vLLM OpenAI-compatible endpoint, LoRA training and DSPy compiles as script jobs. Use when the user asks to run something on Colab, transcribe or diarize audio on a GPU, start vLLM on Colab, train a small model on Colab, or send a batch job to Colab and fetch the results.
+description: Use a Google Colab GPU runtime (L4/T4, Colab Pro) as a job server driven entirely from the local machine through a cloudflared tunnel — faster-whisper transcription, pyannote diarization, YouTube audio download, a vLLM OpenAI-compatible endpoint, LoRA training pushed to private Hugging Face repos, DSPy compiles, and a catalog of what was trained. The agent starts the runtime itself (Claude in Chrome) and finds its URL itself; after one-time setup the user only says what to run. Use when the user asks to run, train, transcribe, diarize, or serve something on Colab, or asks what models were trained.
 ---
 
 # colab-harness
 
-A Colab GPU runtime becomes a job server reachable from here. Colab has no
-API to start a runtime, so one click stays manual (or is done through the
-Claude in Chrome extension); everything after that is HTTP through a tunnel.
+After one-time setup (three secrets, see the setup recipes) the user's whole
+instruction is "run X on Colab". Everything else is the agent's job:
 
 ```
-you: Run all (once per session) ─→ Colab: job server + cloudflared ─→ prints the URL
-                                                                        │
-local: node colab.mjs connect <url> ←───────────────────────────────────┘
-       node colab.mjs pipeline / transcribe / diarize / youtube / vllm / script / run
+       you: "run the training on colab" ←───────┐
+                        ↓                       │
+      agent: node colab.mjs check               │
+                        ↓                       │
+  no runtime → agent opens the notebook,        │
+  picks L4, Run all (Claude in Chrome)          │
+                        ↓                       │
+  Colab: fresh VM, fresh random tunnel URL,     │
+  published to a private HF dataset repo        │ next task: same, from zero
+                        ↓                       │
+      agent: node colab.mjs connect             │
+             (finds the URL itself)             │
+                        ↓                       │
+      jobs: script --push / transcribe / vllm   │
+                        ↓                       │
+      agent: node colab.mjs release ────────────┘
 ```
 
-All commands live in `scripts/colab.mjs`. Run `node colab.mjs --help` for
-flags. Each task below has one recipe; read only the one you need.
+**Start every task with `node colab.mjs check`.** It reports what is
+configured, whether a runtime is up or published, and prints the exact next
+step. Its exit code is 0 when there is something to use.
+
+Why there is a "start the runtime" step at all: Colab has no API to allocate
+a VM, so a browser must click Run all once per session, and every session
+gets a new random tunnel address. The notebook publishes that address to
+`<hf-user>/colab-harness-state` (private), so `connect` needs no argument
+and nobody ever copies a URL. An agent with a browser tool does the click
+itself; an agent without one asks the user for that single click and
+nothing else. Never ask the user for a URL.
+
+All commands live in `scripts/colab.mjs`; `node colab.mjs --help` lists
+them. Each task below has one recipe; read only the one you need.
 
 | Task | Recipe |
 |---|---|
@@ -34,6 +57,8 @@ flags. Each task below has one recipe; read only the one you need.
 1. **Never type a credential into Colab or read one off a page.** The
    harness token is pasted by the user once; the YouTube cookie file is
    seeded by the user and never opened, printed, or copied by an agent.
+   Reading the tunnel URL off the notebook page is allowed but no longer
+   needed: `connect` finds it on the hub.
 2. **A runtime costs compute units every minute.** Before starting a
    session or a long job, state the cost: `connect` prints the GPU's rate
    as units per hour and as a share of the monthly allowance; `keep

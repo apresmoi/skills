@@ -20,7 +20,9 @@ const CHUNK = 8 * 1024 * 1024; // well under the tunnel's per-request cap
 const USAGE = `colab-harness — use a Colab GPU runtime from here.
 
   node colab.mjs init                        generate the shared token once (store it as Colab secret HARNESS_TOKEN)
-  node colab.mjs connect <url> [token]       save this session; token defaults to the one from init
+  node colab.mjs check                       START HERE: what is configured, what is up, what to do next
+  node colab.mjs connect [url] [token]       save this session; with no url, finds the runtime the notebook
+                                             published to Hugging Face (<user>/colab-harness-state, private)
   node colab.mjs sessions                    list saved sessions and whether each still answers
   --session <name>                           act on a named session (default "default"; env COLAB_SESSION)
                                              one runtime per session: e.g. --session train and --session serve
@@ -94,6 +96,29 @@ const ownerInfo = (cwd = process.cwd()) => {
   if (root) { o.git_root = root; o.remote = git(["remote", "get-url", "origin"], cwd); o.branch = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd); o.commit = git(["rev-parse", "--short", "HEAD"], cwd); if (git(["status", "--porcelain"], cwd)) o.dirty = true; }
   return o;
 };
+// Runtime discovery: the notebook publishes {url, started, gpu} to the private dataset
+// repo <user>/colab-harness-state on Hugging Face; a bare `connect` reads it from there.
+const hfLocalToken = async () => process.env.HF_TOKEN?.trim() || (await readFile(path.join(homedir(), ".cache/huggingface/token"), "utf8").catch(() => "")).trim() || null;
+const hfWhoami = async (tok) => fetch("https://huggingface.co/api/whoami-v2", { headers: { authorization: `Bearer ${tok}` } }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+const discoverRuntimes = async () => {
+  const tok = await hfLocalToken(); if (!tok) return { error: "no local Hugging Face login (run: hf auth login, or set HF_TOKEN)" };
+  const who = await hfWhoami(tok); if (!who?.name) return { error: "local Hugging Face token rejected" };
+  const repo = `${who.name}/colab-harness-state`; const hdr = { authorization: `Bearer ${tok}` };
+  const tree = await fetch(`https://huggingface.co/api/datasets/${repo}/tree/main/runtimes`, { headers: hdr }).then((r) => (r.ok ? r.json() : [])).catch(() => []);
+  const runtimes = [];
+  for (const f of Array.isArray(tree) ? tree : []) {
+    if (!/\.json$/.test(f.path)) continue;
+    const rec = await fetch(`https://huggingface.co/datasets/${repo}/resolve/main/${f.path}`, { headers: hdr }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (rec?.url) runtimes.push({ ...rec, file: f.path });
+  }
+  return { repo, user: who.name, runtimes: runtimes.sort((a, b) => (b.started ?? "").localeCompare(a.started ?? "")), tok };
+};
+const retireRuntime = async (d, file) => {   // delete a stale record with one commit
+  const body = [JSON.stringify({ key: "header", value: { summary: "runtime gone" } }), JSON.stringify({ key: "deletedFile", value: { path: file } })].join("\n");
+  await fetch(`https://huggingface.co/api/datasets/${d.repo}/commit/main`, { method: "POST", headers: { authorization: `Bearer ${d.tok}`, "content-type": "application/x-ndjson" }, body }).catch(() => null);
+};
+const probe = async (url, token) => fetch(url.replace(/\/+$/, "") + "/health", { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+const savedSessions = async () => { const { readdir } = await import("node:fs/promises"); let names = []; try { names = (await readdir(SESSIONS_DIR)).filter((f) => f.endsWith(".json")).map((f) => f.slice(0, -5)); } catch { /* none */ } const out = []; for (const n of names.sort()) out.push({ name: n, ...JSON.parse(await readFile(sessionFile(n), "utf8")) }); return out; };
 const loadCatalog = async () => loadJson(CATALOG_FILE, []);
 const saveCatalog = async (c) => saveJson(CATALOG_FILE, c);
 const catalogUpsert = async (entry) => { const c = await loadCatalog(); const i = c.findIndex((e) => e.name === entry.name); if (i >= 0) c[i] = { ...c[i], ...entry }; else c.push(entry); await saveCatalog(c); return entry; };
@@ -310,12 +335,24 @@ const main = async () => {
   }
 
   if (cmd === "connect") {
-    const [url, tokenArg] = rest;
-    if (!url) die("usage: connect <url> [token]");
+    let [url, tokenArg] = rest;
     let token = tokenArg;
     if (!token) {
       try { token = (await readFile(TOKEN_FILE, "utf8")).trim(); }
       catch { die("no token given and none stored; run: node colab.mjs init"); }
+    }
+    if (!url) {
+      // No URL given: find the runtime the notebook published, newest first, skipping
+      // ones already bound to another session and retiring ones that no longer answer.
+      const d = await discoverRuntimes();
+      if (d.error) die(`connect: no URL given and ${d.error}; pass the URL printed by the notebook's cell 4`);
+      const taken = new Set((await savedSessions()).filter((s) => s.name !== SESSION_NAME).map((s) => s.url));
+      for (const r of d.runtimes) {
+        if (taken.has(r.url.replace(/\/+$/, ""))) continue;
+        if (await probe(r.url, token)) { url = r.url; console.error(`found runtime published ${r.started} (${r.gpu}) in ${d.repo}`); break; }
+        await retireRuntime(d, r.file);
+      }
+      if (!url) die(d.runtimes.length ? "connect: the published runtimes no longer answer (retired them). Start one: open the notebook and Run all, then connect again." : `connect: no runtime published in ${d.repo}. Start one: open the notebook, pick L4, Run all, wait ~2 min, then \`connect\` again.`, 1);
     }
     const session = { name: SESSION_NAME, url: url.replace(/\/+$/, ""), token, connected_at: new Date().toISOString() };
     await mkdir(SESSIONS_DIR, { recursive: true, mode: 0o700 });
@@ -343,6 +380,28 @@ const main = async () => {
       console.log(`${name.padEnd(12)} ${state.padEnd(60)} ${s.url}  (connected ${s.connected_at})`);
     }
     return;
+  }
+
+  if (cmd === "check") {
+    // The readiness report an agent runs first: what is configured, what is up, what to do next.
+    let ok = true; const say = (line) => console.log(line);
+    const nbUrl = "https://colab.research.google.com/github/apresmoi/skills/blob/main/skills/colab-harness/Colab_Harness.ipynb";
+    let token = null; try { token = (await readFile(TOKEN_FILE, "utf8")).trim(); say("harness token: present (~/.colab-harness/token; must also be the Colab secret HARNESS_TOKEN)"); } catch { ok = false; say("harness token: MISSING → node colab.mjs init, then recipes/setup-token.md"); }
+    const tok = await hfLocalToken(); const who = tok ? await hfWhoami(tok) : null;
+    say(who?.name ? `hugging face (local): ${who.name} · ${who.auth?.accessToken?.role ?? "?"} token → bare \`connect\` and \`models sync\` work` : "hugging face (local): no login → \`connect\` needs the URL from the notebook; fix: hf auth login");
+    try { const st = await stat(YT_COOKIES); say(`youtube cookies: present (${st.size} bytes; \`cookies status\` for expiry)`); } catch { say("youtube cookies: none (only needed for youtube/pipeline; recipes/setup-youtube-cookies.md)"); }
+    const cat = await loadCatalog(); say(`catalog: ${cat.length} trained model${cat.length === 1 ? "" : "s"} (\`models\`)`);
+    const sessions = await savedSessions(); let live = 0;
+    for (const s of sessions) { const h = token ? await probe(s.url, s.token ?? token) : null; if (h) { live++; say(`session ${s.name}: UP · ${h.gpu?.name ?? "no gpu"} · lease ${Math.max(0, Math.floor(h.lease.expires_in_s / 60))} min · ${hfLine(h)}`); } else { say(`session ${s.name}: down (${s.url})`); await closeLedger(s.url); } }
+    if (!sessions.length) say("sessions: none saved");
+    let published = 0;
+    if (who?.name && token) { const d = await discoverRuntimes(); const bound = new Set(sessions.map((s) => s.url)); for (const r of d.runtimes ?? []) { if (bound.has(r.url)) continue; if (await probe(r.url, token)) { published++; say(`published runtime not yet connected: ${r.gpu} started ${r.started} → node colab.mjs connect`); } else await retireRuntime(d, r.file); } }
+    say("");
+    if (live) say(`READY: ${live} runtime${live === 1 ? "" : "s"} up. Use it, then \`release\`.`);
+    else if (published) say("READY TO CONNECT: run \`node colab.mjs connect\`.");
+    else if (ok) { say("NO RUNTIME. Start one yourself if you control a browser (Claude in Chrome): open"); say(`  ${nbUrl}`); say("  Runtime → Change runtime type → L4 · Run all · wait ~2 min · then: node colab.mjs connect" + (who?.name ? "" : " <url from cell 4>")); say("Without a browser tool, ask the user for exactly that one click (Run all), nothing else."); }
+    else say("NOT CONFIGURED: fix the items marked MISSING first (recipes/setup-token.md).");
+    process.exit(live || published ? 0 : 1);
   }
 
   if (cmd === "models") {

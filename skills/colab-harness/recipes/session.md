@@ -2,27 +2,37 @@
 
 ## Start a session
 
-1. Open the notebook straight from GitHub (an agent with Claude in Chrome
-   can do all of this itself; only the Drive-consent dialog and the secrets
-   are for the user):
+`node colab.mjs check` first. If it says READY, skip to the jobs. If it says
+NO RUNTIME, start one:
+
+1. **Agent with Claude in Chrome: do this yourself.** Open
    `https://colab.research.google.com/github/apresmoi/skills/blob/main/skills/colab-harness/Colab_Harness.ipynb`
-2. Untick `MOUNT_DRIVE` in cell 1 unless the user wants Drive (it needs a
-   consent click every runtime). Runtime → Change runtime type → **L4**
-   (T4 works, slower). Runtime → **Run all** → "Run anyway" on the GitHub
-   warning.
-3. Wait for the tunnel cell: it prints `node colab.mjs connect <url>`. Read
-   the URL only; nothing else on the page is needed. Then, from `scripts/`:
+   in a fresh tab (a stale tab keeps a cached copy of the notebook).
+   Runtime → Change runtime type → **L4** (the reloaded notebook defaults to
+   "GPU" = T4). Runtime → **Run all** → "Run anyway" on the GitHub warning.
+   Leave `MOUNT_DRIVE` unticked unless the user wants Drive (consent click
+   every runtime). Nothing on the page needs to be read or typed; the
+   secrets are already there.
+   **Agent without a browser tool:** ask the user for that one click, Run
+   all, on that link. Do not ask for a URL.
+2. About two minutes later the notebook has published its tunnel URL to
+   `<hf-user>/colab-harness-state` (private dataset repo, using the
+   `HF_TOKEN` secret). Then, from `scripts/`:
 
    ```bash
-   node colab.mjs connect <url>          # uses the stored token
+   node colab.mjs connect                # finds the published URL; needs a local HF login (hf auth login)
+   node colab.mjs connect <url>          # fallback: the URL printed by cell 4
    node colab.mjs status                 # GPU, jobs, vLLM, lease left
    ```
 
-4. Leave the notebook tab open: its last cell is the lease watchdog.
+   `connect` skips runtimes already bound to another session, retires
+   published records that no longer answer, and prints the cost rate.
+3. Leave the notebook tab open: its last cell is the lease watchdog, and it
+   also retires the published URL when the runtime goes down.
 
 Observed timings on an L4: allocation 20 to 40 s, pip and cloudflared about
-60 s, so the URL appears about two minutes after Run all. The runtime bills
-about 1.54 compute units per hour (L4 High-RAM, measured).
+60 s, so the URL is published about two minutes after Run all. The runtime
+bills about 1.54 compute units per hour (L4 High-RAM, measured).
 
 ## Keep alive and release
 
