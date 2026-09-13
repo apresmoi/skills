@@ -121,7 +121,9 @@ codes, chunked upload, tiny-model transcription, fetch, script kind, lease
 renewal, expiry, busy guard, keep, release. Against a Colab L4 through the
 tunnel, opened and run by an agent with Claude in Chrome and no human step:
 connect with the stored token, shell job, large-v3 transcription, vLLM in
-its venv with a chat completion. Rebuild the notebook and rerun after
+its venv with a chat completion and measured throughput (Qwen 2.5 7B AWQ:
+45 tok/s single stream through the tunnel, 843 tok/s aggregate at 32
+streams), hot reload, lease watchdog, release. Rebuild the notebook and rerun after
 changing the server.
 
 ## Not yet ported from the jianglens notebooks

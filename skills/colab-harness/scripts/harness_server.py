@@ -345,7 +345,8 @@ def vllm_start(body: dict):
     env = dict(os.environ, PATH=f"{VLLM_VENV / 'bin'}:{os.environ.get('PATH', '')}")
     _vllm["proc"] = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=env)
     _vllm["model"], _vllm["started"] = model, time.time()
-    return {"started": True, "model": model, "cmd": cmd}
+    shown = [("<token>" if a == TOKEN else a) for a in cmd]   # never echo the session token
+    return {"started": True, "model": model, "cmd": shown}
 
 
 @app.post("/vllm/stop")
