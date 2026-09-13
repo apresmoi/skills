@@ -172,6 +172,18 @@ async def submit(kind: str = Form(...), params: str = Form("{}"), file: Optional
         with dest.open("wb") as fh:
             shutil.copyfileobj(file.file, fh)
         job["input"] = dest.name
+    elif p.get("input_job"):
+        src_dir = Path(jobs.get(str(p["input_job"]), {}).get("dir", ""))
+        if not src_dir.is_dir():
+            raise HTTPException(404, f"no such input_job {p['input_job']}")
+        name = p.get("input_file")
+        cands = [src_dir / name] if name else [src_dir / "audio.wav"] + sorted(src_dir.glob("input.*"))
+        src = next((c for c in cands if c.is_file()), None)
+        if src is None:
+            raise HTTPException(404, f"input_job {p['input_job']} has no usable input file")
+        dest = Path(job["dir"]) / f"input{src.suffix or '.bin'}"
+        os.link(src, dest) if os.stat(src).st_dev == os.stat(job["dir"]).st_dev else shutil.copy(src, dest)
+        job["input"] = dest.name
     elif p.get("upload_id"):
         d = UPLOADS_DIR / str(p["upload_id"])
         if not d.is_dir():
@@ -218,6 +230,125 @@ def run_shell(job: dict) -> dict:
     return {"exit_code": proc.returncode, "stdout_tail": proc.stdout[-2000:], "stderr_tail": proc.stderr[-2000:]}
 
 
+COOKIE_ERROR_PATTERNS = ["sign in", "login required", "cookies", "age-restricted", "private video",
+                         "confirm your age", "bot", "captcha", "not a bot"]
+
+
+def run_youtube(job: dict) -> dict:
+    # Ported from the jianglens YouTube_Manager: bestaudio → wav via ffmpeg, mono 16 kHz.
+    # An uploaded cookies.txt (Netscape) is used for this job only and deleted after.
+    p = job["params"]
+    url = p.get("url")
+    if not url:
+        raise ValueError("youtube job needs params.url")
+    d = Path(job["dir"])
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "yt-dlp"], check=True)
+    cookies = d / job["input"] if "input" in job else None
+    cmd = [sys.executable, "-m", "yt_dlp", "--no-playlist", "-f", "bestaudio/best", "-x", "--audio-format", "wav",
+           "--postprocessor-args", "ffmpeg:-ac 1 -ar 16000", "--write-info-json", "--no-write-playlist-metafiles",
+           "-o", str(d / "audio.%(ext)s"), "--quiet", "--no-warnings", url]
+    if cookies:
+        cmd[1:1] = []
+        cmd += ["--cookies", str(cookies)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=int(p.get("timeout", 3600)))
+    finally:
+        if cookies:
+            cookies.unlink(missing_ok=True)
+            job.pop("input", None)
+    (d / "yt-dlp.log").write_text(proc.stdout + proc.stderr)
+    if proc.returncode != 0:
+        msg = (proc.stderr or proc.stdout)[-800:]
+        if any(k in msg.lower() for k in COOKIE_ERROR_PATTERNS):
+            raise RuntimeError("COOKIE_EXPIRED: YouTube refused the download (" + msg.strip().splitlines()[-1][:200] +
+                               "). Re-export cookies.txt from a logged-in browser and seed it locally.")
+        raise RuntimeError(f"yt-dlp exit {proc.returncode}: {msg.strip()[-400:]}")
+    info = next(iter(d.glob("*.info.json")), None)
+    meta = {}
+    if info:
+        raw = json.loads(info.read_text())
+        meta = {k: raw.get(k) for k in ("id", "title", "channel", "channel_id", "uploader", "upload_date", "duration",
+                                        "webpage_url", "view_count", "language")}
+        (d / "metadata.youtube.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+        info.unlink()
+    wav = d / "audio.wav"
+    if not wav.exists():
+        raise RuntimeError("download finished but audio.wav is missing; see yt-dlp.log")
+    return {"title": meta.get("title"), "duration": meta.get("duration"), "audio_bytes": wav.stat().st_size,
+            "cookies_used": cookies is not None}
+
+
+# ---- diarize kind: pyannote in its own venv (Colab's torchaudio mismatches its torch) ----
+PYANNOTE_VENV = Path(os.environ.get("HARNESS_PYANNOTE_VENV", "/content/pyannote-venv"))
+PYANNOTE_WORKER = r"""
+import json, os, sys
+from pathlib import Path
+import torch, torchaudio
+from pyannote.audio import Pipeline
+from pyannote.core import Annotation, Segment
+src, out_dir, pipeline_id, threshold = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], float(sys.argv[4])
+num_speakers = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else None
+token = os.environ.get("HF_TOKEN") or None
+pipeline = Pipeline.from_pretrained(pipeline_id, token=token)
+if pipeline is None:
+    raise SystemExit(f"could not load {pipeline_id}: accept its terms on huggingface.co and set HF_TOKEN")
+pipeline.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+waveform, sr = torchaudio.load(str(src))
+out = pipeline({"waveform": waveform, "sample_rate": sr}, num_speakers=num_speakers)
+ann = getattr(out, "speaker_diarization", None) or getattr(out, "annotation", None) or out
+def serialize(a):
+    return {"diarization": [{"speaker": lab, "start": round(s.start, 3), "end": round(s.end, 3), "track": t}
+                            for s, t, lab in a.itertracks(yield_label=True)], "embeddings": {}}
+def group(a, th):
+    g = Annotation(); cs, cg = None, None
+    for s, t, lab in a.itertracks(yield_label=True):
+        if cs is None: cs, cg = lab, s; continue
+        if cs == lab and s.start - cg.end <= th: cg = Segment(cg.start, s.end)
+        else: g[cg] = cs; cs, cg = lab, s
+    if cs is not None: g[cg] = cs
+    return g
+(out_dir / "dump.json").write_text(json.dumps(serialize(ann), indent=2))
+(out_dir / "grouped.json").write_text(json.dumps(serialize(group(ann, threshold)), indent=2))
+speakers = sorted({lab for _, _, lab in ann.itertracks(yield_label=True)})
+print(json.dumps({"speakers": speakers, "turns": len(list(ann.itertracks()))}))
+"""
+
+
+def pyannote_installed() -> bool:
+    return (PYANNOTE_VENV / "bin" / "python").exists() and any(PYANNOTE_VENV.glob("lib/python*/site-packages/pyannote/audio/__init__.py"))
+
+
+def run_diarize(job: dict) -> dict:
+    p = job["params"]
+    if "input" not in job:
+        raise ValueError("diarize job needs an audio file (upload or input_job)")
+    d = Path(job["dir"])
+    if not pyannote_installed():
+        subprocess.run(["bash", "-c", f"pip install -q uv && rm -rf {PYANNOTE_VENV} && uv venv -q {PYANNOTE_VENV} && "
+                        f"uv pip install -q --python {PYANNOTE_VENV}/bin/python 'pyannote.audio>=3.3' torchaudio"], check=True, timeout=1800)
+    worker = d / "pyannote_worker.py"
+    worker.write_text(PYANNOTE_WORKER)
+    args = [str(PYANNOTE_VENV / "bin" / "python"), str(worker), str(d / job["input"]), str(d),
+            p.get("pipeline", "pyannote/speaker-diarization-3.1"), str(p.get("group_threshold", 3.0)), str(p.get("num_speakers") or "")]
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=int(p.get("timeout", 7200)))
+    (d / "diarize.log").write_text(proc.stdout + proc.stderr)
+    worker.unlink(missing_ok=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"pyannote exit {proc.returncode}: {(proc.stderr or proc.stdout).strip()[-600:]}")
+    last = [l for l in proc.stdout.splitlines() if l.startswith("{")]
+    return json.loads(last[-1]) if last else {"ok": True}
+
+
+def find_speaker(seg_start, seg_end, turns):
+    # jianglens rule: the speaker with the largest time overlap, else None
+    best, best_ov = None, 0.0
+    for t in turns:
+        ov = min(seg_end, t["end"]) - max(seg_start, t["start"])
+        if ov > best_ov:
+            best, best_ov = t["speaker"], ov
+    return best
+
+
 def run_transcribe(job: dict) -> dict:
     # Ported from the Whisper_Transcription notebook: whole-file transcription with
     # faster-whisper; the model is cached per (name, compute_type) for the session.
@@ -237,9 +368,18 @@ def run_transcribe(job: dict) -> dict:
         str(src), language=p.get("language") or None, beam_size=int(p.get("beam_size", 5)),
         vad_filter=bool(p.get("vad_filter", True)), word_timestamps=bool(p.get("word_timestamps", False)),
     )
+    turns = None
+    if p.get("diarization_job"):
+        gdir = Path(jobs.get(str(p["diarization_job"]), {}).get("dir", ""))
+        gpath = gdir / "grouped.json"
+        if not gpath.is_file():
+            raise ValueError(f"diarization_job {p['diarization_job']} has no grouped.json")
+        turns = json.loads(gpath.read_text())["diarization"]
     segs = []
     for s in segments:
         seg = {"start": round(s.start, 3), "end": round(s.end, 3), "text": s.text.strip()}
+        if turns is not None:
+            seg["speaker"] = find_speaker(seg["start"], seg["end"], turns)
         if p.get("word_timestamps") and s.words:
             seg["words"] = [{"start": round(w.start, 3), "end": round(w.end, 3), "word": w.word} for w in s.words]
         segs.append(seg)
@@ -247,9 +387,10 @@ def run_transcribe(job: dict) -> dict:
            "language_probability": round(info.language_probability, 3), "duration": round(info.duration, 3),
            "segments": segs}
     (Path(job["dir"]) / "transcription.json").write_text(json.dumps(out, ensure_ascii=False, indent=2))
-    md = "\n".join(f"[{fmt(s['start'])} → {fmt(s['end'])}] {s['text']}" for s in segs)
+    md = "\n".join(f"[{fmt(s['start'])} → {fmt(s['end'])}]{' ' + s['speaker'] + ':' if s.get('speaker') else ''} {s['text']}" for s in segs)
     (Path(job["dir"]) / "transcript.md").write_text(md + "\n")
-    return {"language": info.language, "duration": out["duration"], "segments": len(segs)}
+    return {"language": info.language, "duration": out["duration"], "segments": len(segs),
+            "speakers": sorted({x["speaker"] for x in segs if x.get("speaker")}) if turns is not None else None}
 
 
 def fmt(t: float) -> str:
@@ -281,7 +422,7 @@ def run_script(job: dict) -> dict:
     return {"exit_code": proc.returncode, "stdout_tail": tail("stdout.txt"), "stderr_tail": tail("stderr.txt")}
 
 
-KINDS = {"shell": run_shell, "transcribe": run_transcribe, "script": run_script}
+KINDS = {"shell": run_shell, "transcribe": run_transcribe, "script": run_script, "youtube": run_youtube, "diarize": run_diarize}
 
 
 def worker():

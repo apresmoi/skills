@@ -9,6 +9,7 @@ import process from "node:process";
 
 const HOME = path.join(process.env.COLAB_HARNESS_HOME ?? path.join(homedir(), ".colab-harness"));
 const TOKEN_FILE = path.join(HOME, "token");
+const YT_COOKIES = path.join(HOME, "youtube-cookies.txt");   // seeded by the user, never read by an agent
 // Sessions are named so several runtimes can be driven at once:
 //   --session train   or   COLAB_SESSION=train   (default: "default")
 const SESSIONS_DIR = path.join(HOME, "sessions");
@@ -24,7 +25,13 @@ const USAGE = `colab-harness — use a Colab GPU runtime from here.
                                              one runtime per session: e.g. --session train and --session serve
   node colab.mjs status                      health: GPU, jobs, vLLM
   node colab.mjs run "<shell command>"       run a command on the VM (waits, prints output)
-  node colab.mjs transcribe <audio> [--model large-v3] [--language es] [--compute-type float16] [--out DIR]
+  node colab.mjs transcribe <audio | --from-job ID> [--model large-v3] [--language es] [--diarization JOB] [--out DIR]
+  node colab.mjs youtube <url> [--cookies PATH] [--no-cookies] [--fetch-audio] [--out DIR]
+                                             download audio (mono 16 kHz wav) on the VM; cookies default to
+                                             ~/.colab-harness/youtube-cookies.txt when that file exists
+  node colab.mjs diarize <audio | --from-job ID> [--speakers N] [--out DIR]   pyannote 3.1 (needs HF_TOKEN secret + accepted terms)
+  node colab.mjs pipeline <url|audio> [--language es] [--speakers N] [--out DIR]
+                                             youtube (if url) → diarize → transcribe with speakers, one command
   node colab.mjs script <file.py|.sh> [--args "a b"] [--env K=V,K2=V2] [--python PATH] [--out DIR]
                                              upload and run a script on the VM (train, DSPy compile, ...)
   node colab.mjs keep [--minutes 120]        extend the lease (default lease: 30 min after last activity)
@@ -94,6 +101,30 @@ const upload = async (session, file) => {
   }
   process.stderr.write("\n");
   return upload_id;
+};
+
+// Local file → chunked upload; --from-job → reuse the VM-side file of an earlier job.
+const audioParams = async (session, file, opt) => {
+  if (opt["from-job"]) return { input_job: opt["from-job"], ...(opt["from-file"] ? { input_file: opt["from-file"] } : {}) };
+  if (!file) die("give an audio file or --from-job <id>");
+  return { upload_id: await upload(session, file) };
+};
+
+const cookieHint = "COOKIE_EXPIRED: export cookies.txt for youtube.com from a logged-in browser (Netscape format, e.g. the 'Get cookies.txt LOCALLY' extension) and save it as " + YT_COOKIES + " — then rerun. An agent must ask the user to do this; it must not read or print the file.";
+
+const runYoutube = async (session, url, opt) => {
+  const params = { url };
+  if (!opt["no-cookies"]) {
+    let cookiesPath = opt.cookies ?? YT_COOKIES;
+    let exists = true; try { await stat(cookiesPath); } catch { exists = false; }
+    if (exists) { console.error(`uploading cookies from ${cookiesPath} (job-scoped, deleted on the VM after use)`); params.upload_id = await upload(session, cookiesPath); }
+    else if (opt.cookies) die(`cookies file not found: ${cookiesPath}`);
+    else console.error(`no cookies file at ${YT_COOKIES}; trying without (YouTube may refuse from Colab IPs)`);
+  }
+  const job = await submit(session, "youtube", params);
+  const done = await waitJob(session, job.id);
+  if (done.status === "failed") die(done.error?.includes("COOKIE_EXPIRED") ? `${done.error}\n\n${cookieHint}` : `youtube job failed: ${done.error}`, 1);
+  return done;
 };
 
 const submit = (session, kind, params) => {
@@ -212,11 +243,56 @@ const main = async () => {
     process.exit(done.result.exit_code === 0 ? 0 : 1);
   }
 
+  if (cmd === "youtube") {
+    const url = rest[0];
+    if (!url) die("usage: youtube <url> [--cookies PATH] [--no-cookies] [--fetch-audio] [--out DIR]");
+    const done = await runYoutube(session, url, opt);
+    const outDir = opt.out ?? path.join("colab-jobs", done.id);
+    await fetchFiles(session, { ...done, files: done.files.filter((f) => "fetch-audio" in opt || !f.endsWith(".wav")) }, outDir);
+    console.log(JSON.stringify({ id: done.id, ...done.result, audio_on_vm: "audio.wav", out: outDir }, null, 2));
+    return;
+  }
+
+  if (cmd === "diarize") {
+    const params = { ...(await audioParams(session, rest[0], opt)) };
+    if (opt.speakers) params.num_speakers = Number(opt.speakers);
+    const job = await submit(session, "diarize", params);
+    const done = await waitJob(session, job.id);
+    if (done.status === "failed") die(`diarization failed: ${done.error}`, 1);
+    const outDir = opt.out ?? path.join("colab-jobs", job.id);
+    await fetchFiles(session, { ...done, files: done.files.filter((f) => !f.endsWith(".wav")) }, outDir);
+    console.log(JSON.stringify({ id: job.id, ...done.result, out: outDir }, null, 2));
+    return;
+  }
+
+  if (cmd === "pipeline") {
+    const src = rest[0];
+    if (!src) die("usage: pipeline <url|audio> [--language xx] [--speakers N] [--out DIR]");
+    let sourceJob;
+    if (/^https?:\/\//.test(src)) { sourceJob = await runYoutube(session, src, opt); console.error(`downloaded: ${sourceJob.result.title}`); }
+    else { const uploadId = await upload(session, src); const j = await submit(session, "shell", { cmd: "mv input.* audio.wav", upload_id: uploadId }); sourceJob = await waitJob(session, j.id, { quiet: true }); }
+    const dParams = { input_job: sourceJob.id, input_file: "audio.wav" };
+    if (opt.speakers) dParams.num_speakers = Number(opt.speakers);
+    const dJob = await waitJob(session, (await submit(session, "diarize", dParams)).id);
+    if (dJob.status === "failed") die(`diarization failed: ${dJob.error}`, 1);
+    console.error(`diarized: ${(dJob.result.speakers ?? []).length} speakers`);
+    const tParams = { input_job: sourceJob.id, input_file: "audio.wav", diarization_job: dJob.id, model: opt.model ?? "large-v3" };
+    if (opt.language) tParams.language = opt.language;
+    const tJob = await waitJob(session, (await submit(session, "transcribe", tParams)).id);
+    if (tJob.status === "failed") die(`transcription failed: ${tJob.error}`, 1);
+    const outDir = opt.out ?? path.join("colab-jobs", tJob.id);
+    await fetchFiles(session, { ...sourceJob, files: sourceJob.files.filter((f) => f.endsWith(".json")) }, outDir);
+    await fetchFiles(session, { ...dJob, files: dJob.files.filter((f) => f.endsWith(".json")) }, outDir);
+    await fetchFiles(session, { ...tJob, files: tJob.files.filter((f) => !f.startsWith("input")) }, outDir);
+    console.log(JSON.stringify({ youtube: sourceJob.id, diarize: dJob.id, transcribe: tJob.id, ...tJob.result, out: outDir }, null, 2));
+    return;
+  }
+
   if (cmd === "transcribe") {
     const file = rest[0];
-    if (!file) die("usage: transcribe <audio> [--model M] [--language xx] [--out DIR]");
-    const uploadId = await upload(session, file);
-    const params = { upload_id: uploadId, model: opt.model ?? "large-v3" };
+    if (!file && !opt["from-job"]) die("usage: transcribe <audio | --from-job ID> [--model M] [--language xx] [--diarization JOB] [--out DIR]");
+    const params = { ...(await audioParams(session, file, opt)), model: opt.model ?? "large-v3" };
+    if (opt.diarization) params.diarization_job = opt.diarization;
     if (opt.language) params.language = opt.language;
     if (opt["compute-type"]) params.compute_type = opt["compute-type"];
     if (opt["word-timestamps"]) params.word_timestamps = true;

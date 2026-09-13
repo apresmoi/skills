@@ -128,6 +128,31 @@ writes into the job directory come back with `fetch`. This is how a QLoRA
 run or a DSPy compile against the local vLLM ships: one file, checkpoints
 written to the job dir or to Drive.
 
+`youtube <url>` downloads audio on the VM with yt-dlp (mono 16 kHz wav) and
+fetches `metadata.youtube.json`; the wav stays on the VM unless
+`--fetch-audio`. Cookies: YouTube blocks Colab's IPs without a logged-in
+session, so keep a Netscape `cookies.txt` at
+`~/.colab-harness/youtube-cookies.txt`. The CLI uploads it per job and the
+VM deletes it when the job ends; nothing is stored in Drive or secrets. When
+YouTube refuses, the job fails with `COOKIE_EXPIRED` and the user re-exports
+the file. **An agent never reads, prints, or moves that file**; it asks the
+user to seed it, same rule as the deep-research skill's cookies.
+
+`diarize <audio | --from-job ID>` runs pyannote speaker-diarization-3.1 in
+its own venv on the VM and fetches `dump.json` (raw turns) and
+`grouped.json` (turns of the same speaker merged across gaps under 3 s), the
+jianglens formats. Setup, one-time, on the Hugging Face account behind the
+`HF_TOKEN` secret: accept the terms on the `pyannote/speaker-diarization-3.1`
+and `pyannote/segmentation-3.0` model pages.
+
+`transcribe --from-job ID --diarization JOB` reuses a file already on the
+VM and labels each segment with the speaker of largest overlap, so
+`transcript.md` reads `[00:01:02 → 00:01:09] SPEAKER_00: …`.
+
+`pipeline <url | audio>` chains the three: download or upload, diarize,
+transcribe with speakers, and fetches every JSON plus the transcript into
+one folder. `--language`, `--speakers N`, `--out DIR` pass through.
+
 `vllm start` installs vLLM into `/content/vllm-venv` on first use, so it
 never touches Colab's own torch, then blocks until the model is loaded.
 `/v1/*` is proxied through the tunnel with the session token as the API
@@ -192,7 +217,8 @@ streams), hot reload, lease watchdog, release; `examples/train_lora.py`
 fetched). Rebuild the notebook and rerun after
 changing the server.
 
-## Not yet ported from the jianglens notebooks
+## Adding a job kind
 
-Diarization (pyannote, needs an HF token in Colab secrets) and the YouTube
-downloader. Both fit as job kinds; the server's `KINDS` table is the seam.
+The server's `KINDS` table maps a kind name to a function taking the job
+dict; `input_job` and `upload_id` handling is shared, so a new kind only
+needs to read `job["input"]` and write files into `job["dir"]`.
