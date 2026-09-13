@@ -35,7 +35,8 @@ const USAGE = `colab-harness — use a Colab GPU runtime from here.
   node colab.mjs diarize <audio | --from-job ID> [--speakers N] [--out DIR]   pyannote 3.1 (needs HF_TOKEN secret + accepted terms)
   node colab.mjs pipeline <url|audio> [--language es] [--speakers N] [--out DIR]
                                              youtube (if url) → diarize → transcribe with speakers, one command
-  node colab.mjs script <file.py|.sh> [--args "a b"] [--env K=V,K2=V2] [--python PATH] [--out DIR]
+  node colab.mjs script <file.py|.sh> [--args "a b"] [--env K=V,K2=V2] [--python PATH] [--out DIR] [--push REPO [--push-dir adapter] [--public]]
+  node colab.mjs hf                              Hugging Face token on the VM: user, role, can it push (private repos)
                                              upload and run a script on the VM (train, DSPy compile, ...)
   node colab.mjs keep [--minutes 120] [--dry-run]   extend the lease; prints the compute-unit cost of that time
   node colab.mjs cost                        this month's sessions, units, % of the monthly allowance, balance if seeded
@@ -62,7 +63,7 @@ const parse = (argv) => {
   const pos = [], opt = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith("--")) { const n = argv[i + 1]; if (["follow", "no-open", "all", "no-cookies", "fetch-audio", "word-timestamps", "force", "dry-run"].includes(a.slice(2)) || n === undefined || n.startsWith("--")) opt[a.slice(2)] = true; else { opt[a.slice(2)] = n; i++; } }
+    if (a.startsWith("--")) { const n = argv[i + 1]; if (["follow", "no-open", "all", "no-cookies", "fetch-audio", "word-timestamps", "force", "dry-run", "public"].includes(a.slice(2)) || n === undefined || n.startsWith("--")) opt[a.slice(2)] = true; else { opt[a.slice(2)] = n; i++; } }
     else pos.push(a);
   }
   return { pos, opt };
@@ -99,6 +100,22 @@ const spentSince = async (asOf) => { const since = asOf ? Date.parse(asOf) / 100
 const unitsOf = (e) => (e.rate === null ? null : (e.rate * (((e.ended ?? e.last_seen) - e.started) / 3600)));
 
 let SESSION_NAME = "default";
+function hfLine(h) {
+  const hf = h.hf ?? {};
+  if (!hf.token) return "hf: no HF_TOKEN secret (gated models and pushes unavailable)";
+  if (hf.error) return `hf: token rejected (${hf.error})`;
+  return `hf: ${hf.user} · ${hf.role} token · ${hf.write ? "can push (private repos)" : "READ-ONLY, pushes will fail: create a write token and update the Colab secret"}`;
+}
+
+async function requireHfWrite(session) {
+  const h = await api(session, "GET", "/health");
+  const hf = h.hf ?? {};
+  if (!hf.token) die("--push needs the HF_TOKEN Colab secret (see recipes/setup-hf.md)");
+  if (hf.error) die(`--push: HF_TOKEN rejected by huggingface.co: ${hf.error}`);
+  if (!hf.write) die(`--push: HF_TOKEN is a ${hf.role} token and cannot write. Create a write token at https://huggingface.co/settings/tokens, replace the HARNESS secret value, then restart the runtime (or: node colab.mjs reload).`);
+  return hf;
+}
+
 const loadSession = async () => {
   try { return JSON.parse(await readFile(sessionFile(SESSION_NAME), "utf8")); }
   catch { die(`no session "${SESSION_NAME}"; run the notebook and use: connect <url> --session ${SESSION_NAME} (looked in ${sessionFile(SESSION_NAME)})`, 1); }
@@ -273,7 +290,7 @@ const main = async () => {
     const h = await api(session, "GET", "/health");
     const e = await touchLedger(session, h);
     const budget = await loadBudget();
-    console.log(`connected [${SESSION_NAME}]: ${session.url}\ngpu: ${h.gpu.name ?? h.gpu.error} · drive: ${h.drive_mounted ? "mounted" : "not mounted"} · uptime ${h.uptime_s}s`);
+    console.log(`connected [${SESSION_NAME}]: ${session.url}\ngpu: ${h.gpu.name ?? h.gpu.error} · drive: ${h.drive_mounted ? "mounted" : "not mounted"} · uptime ${h.uptime_s}s\n${hfLine(h)}`);
     console.log(e.rate === null ? `cost: unknown rate for "${e.gpu}"; set it with: budget rate --gpu "${e.gpu}" --units-per-hour N`
       : `cost: ≈${e.rate} units/h${e.measured ? "" : " (estimated)"} → ${pctOf(e.rate, budget.monthly)} per hour${budget.available !== null ? `; balance ≈${fmtUnits(budget.available - (await spentSince(budget.as_of)))} units` : ""}`);
     return;
@@ -478,6 +495,13 @@ const main = async () => {
     const params = { upload_id: uploadId, args: opt.args ? opt.args.split(/\s+/) : [], timeout: Number(opt.timeout ?? 21600) };
     if (opt.env) params.env = Object.fromEntries(opt.env.split(",").map((kv) => kv.split(/=(.*)/s).slice(0, 2)));
     if (opt.python) params.python = opt.python;
+    if (opt.push) {
+      const hf = await requireHfWrite(session);
+      params.push = String(opt.push).includes("/") ? opt.push : `${hf.user}/${opt.push}`;
+      params.push_dir = opt["push-dir"] ?? "adapter";
+      if (opt.public) params.public = true;
+      console.error(`will push ${params.push_dir}/ to https://huggingface.co/${params.push} (${params.public ? "PUBLIC" : "private"}) when the script succeeds`);
+    }
     const job = await submit(session, "script", params);
     const done = await waitJob(session, job.id);
     const outDir = opt.out ?? path.join("colab-jobs", job.id);
@@ -485,6 +509,15 @@ const main = async () => {
     if (done.status === "failed") die(`script failed: ${done.error}\n(logs in ${outDir})`, 1);
     process.stdout.write(done.result.stdout_tail);
     console.error(`done; files in ${outDir}`);
+    if (done.result.push) {
+      const pu = done.result.push;
+      console.error(`pushed ${pu.files} files (${(pu.bytes / 1e6).toFixed(1)} MB) → ${pu.url} [${pu.private ? "private" : "PUBLIC"}]`);
+    }
+    return;
+  }
+
+  if (cmd === "hf") {
+    console.log(hfLine(await api(session, "GET", "/health")));
     return;
   }
 

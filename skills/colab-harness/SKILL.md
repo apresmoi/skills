@@ -22,12 +22,12 @@ flags. Each task below has one recipe; read only the one you need.
 | Task | Recipe |
 |---|---|
 | First-time setup: the shared token as a Colab secret | `recipes/setup-token.md` |
-| Gated Hugging Face models (Gemma, pyannote): HF_TOKEN and terms | `recipes/setup-hf.md` |
+| Hugging Face token: gated models (Gemma, pyannote) and pushing adapters to private repos | `recipes/setup-hf.md` |
 | YouTube downloads: the cookie file | `recipes/setup-youtube-cookies.md` |
 | Start a session, connect, keep it alive, release it, run several | `recipes/session.md` |
 | Transcribe, diarize, download from YouTube, the one-command pipeline | `recipes/transcribe-diarize.md` |
 | Serve a model with vLLM and use it from any OpenAI client | `recipes/vllm.md` |
-| Run a script on the VM: LoRA training, DSPy compile, anything | `recipes/train-and-scripts.md` |
+| Run a script on the VM: LoRA training, DSPy compile, anything; keep the result with `--push` (private HF repo) | `recipes/train-and-scripts.md` |
 
 ## Hard rules for an agent
 

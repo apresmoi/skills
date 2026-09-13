@@ -73,10 +73,79 @@ def ui():
     return HTMLResponse(UI_HTML)
 
 
+_hf_cache: Optional[dict] = None
+
+
+def hf_info() -> dict:
+    # Who the HF_TOKEN belongs to and whether it can write. Computed once; the
+    # token itself is never returned. Classic tokens carry role read/write; fine-grained
+    # ones list permissions per scope, and any "write" permission counts.
+    global _hf_cache
+    if _hf_cache is not None:
+        return _hf_cache
+    tok = os.environ.get("HF_TOKEN")
+    if not tok:
+        _hf_cache = {"token": False, "write": False}
+        return _hf_cache
+    try:
+        from huggingface_hub import HfApi
+        w = HfApi(token=tok).whoami()
+        at = (w.get("auth") or {}).get("accessToken") or {}
+        role = at.get("role")
+        fg = at.get("fineGrained") or {}
+        perms = list(fg.get("global") or []) + [p for sc in (fg.get("scoped") or []) for p in (sc.get("permissions") or [])]
+        write = role == "write" or any("write" in str(p) for p in perms)
+        _hf_cache = {"token": True, "user": w.get("name"), "role": role, "write": bool(write)}
+    except Exception as e:  # bad token, no network: report, never crash /health
+        _hf_cache = {"token": True, "write": False, "error": str(e)[:200]}
+    return _hf_cache
+
+
+def hf_push(job: dict, repo: str, subdir: str, private: bool) -> dict:
+    # Upload one folder of the job dir to a Hugging Face model repo. Private unless
+    # the caller explicitly asked for public. Adds a README with the base model when
+    # the folder has none, so the hub page shows the lineage.
+    from huggingface_hub import HfApi
+    info = hf_info()
+    if not info.get("write"):
+        raise RuntimeError("HF_TOKEN cannot write (" + str(info.get("role") or info.get("error") or "missing") + "); create a write token and update the Colab secret")
+    folder = Path(job["dir"]) / subdir
+    if not folder.is_dir():
+        raise RuntimeError(f"push: {subdir}/ not found in the job dir (script finished without writing it)")
+    if "/" not in repo:
+        repo = f"{info['user']}/{repo}"
+    readme = folder / "README.md"
+    if not readme.exists():
+        base = None
+        cfg = folder / "adapter_config.json"
+        if cfg.exists():
+            try:
+                base = json.loads(cfg.read_text()).get("base_model_name_or_path")
+            except Exception:
+                base = None
+        fm = ["---", "library_name: peft" if cfg.exists() else "library_name: transformers", "tags:", "- colab-harness"]
+        if cfg.exists():
+            fm.append("- lora")
+        if base:
+            fm.append(f"base_model: {base}")
+        fm.append("---")
+        body = f"\n# {repo.split('/')[-1]}\n\nProduced by colab-harness job `{job['id']}`" + (f" on base `{base}`" if base else "") + ".\n"
+        readme.write_text("\n".join(fm) + body)
+    api = HfApi(token=os.environ["HF_TOKEN"])
+    api.create_repo(repo, private=private, exist_ok=True, repo_type="model")
+    # Never let an existing public repo receive a push that was asked to be private.
+    if private and not api.repo_info(repo).private:
+        raise RuntimeError(f"push refused: {repo} exists and is PUBLIC; pass --public to push there or choose another name")
+    files = [f for f in folder.rglob("*") if f.is_file()]
+    commit = api.upload_folder(folder_path=str(folder), repo_id=repo, commit_message=f"colab-harness job {job['id']}")
+    return {"repo": repo, "url": f"https://huggingface.co/{repo}", "private": bool(api.repo_info(repo).private),
+            "files": len(files), "bytes": sum(f.stat().st_size for f in files), "commit": getattr(commit, "oid", None)}
+
+
 @app.get("/health")
 def health():
     return {
-        "ok": True, "uptime_s": int(time.time() - STARTED), "gpu": gpu_info(),
+        "ok": True, "hf": hf_info(), "uptime_s": int(time.time() - STARTED), "gpu": gpu_info(),
         "drive_mounted": Path("/content/drive/MyDrive").exists(),
         "jobs": {s: sum(1 for j in jobs.values() if j["status"] == s) for s in ("queued", "running", "done", "failed")},
         "vllm": vllm_status(),
@@ -484,7 +553,10 @@ def run_script(job: dict) -> dict:
     tail = lambda n: (Path(job["dir"]) / n).read_text()[-2000:]
     if proc.returncode != 0:
         raise RuntimeError(f"exit {proc.returncode}: {tail('stderr.txt').strip()[-500:]}")
-    return {"exit_code": proc.returncode, "stdout_tail": tail("stdout.txt"), "stderr_tail": tail("stderr.txt")}
+    result = {"exit_code": proc.returncode, "stdout_tail": tail("stdout.txt"), "stderr_tail": tail("stderr.txt")}
+    if p.get("push"):
+        result["push"] = hf_push(job, str(p["push"]), str(p.get("push_dir") or "adapter"), private=not bool(p.get("public")))
+    return result
 
 
 KINDS = {"shell": run_shell, "transcribe": run_transcribe, "script": run_script, "youtube": run_youtube, "diarize": run_diarize}

@@ -4,7 +4,7 @@ The `script` kind uploads one `.py` or `.sh`, runs it in a job directory on
 the VM, streams nothing back until it ends, then fetches whatever it wrote.
 
 ```bash
-node colab.mjs script my_job.py [--args "--epochs 1 --lr 2e-4"] [--env K=V,K2=V2] [--python /content/vllm-venv/bin/python] [--out DIR] [--all]
+node colab.mjs script my_job.py [--args "--epochs 1 --lr 2e-4"] [--env K=V,K2=V2] [--python /content/vllm-venv/bin/python] [--out DIR] [--all] [--push REPO [--push-dir adapter] [--public]]
 ```
 
 The script sees `HARNESS_JOB_DIR` (write outputs here), `HARNESS_TOKEN`,
@@ -28,6 +28,44 @@ expected output, not an error.
 
 Sizing on the L4: QLoRA up to about 14B, LoRA bf16 up to about 4B. A 12B
 QLoRA on 10k examples is 3 to 6 hours, 5 to 9 compute units.
+
+## Keeping the result: push to a private Hugging Face repo
+
+Nothing on the VM survives `release`, and the tunnel caps uploads at
+100 MB, so the durable home for a trained adapter is the hub, pushed from
+the VM itself:
+
+```bash
+node colab.mjs script examples/train_lora.py --args "..." --push my-adapter
+```
+
+- `--push REPO` uploads `adapter/` from the job dir when the script exits 0.
+  A bare name becomes `<hf-user>/<name>`. The repo is created **private**;
+  an existing public repo of that name is refused unless `--public` is given.
+- `--push-dir DIR` pushes another folder (a `merged/` model, a DSPy
+  `compiled/` folder). Only that folder is pushed, never the checkpoints.
+- Before submitting, the CLI checks the VM's token can write; a read-only
+  `HF_TOKEN` fails fast with the fix (see `recipes/setup-hf.md`). The push
+  result prints the file count, size, and URL, marked `[private]`.
+- A README with `base_model` and `library_name: peft` is added when the
+  folder has none, so the hub page and vLLM know the lineage.
+
+Only the adapter goes up: rank 16 on all linear layers is about 18 MB for
+a 0.5B base, 85 MB for an 8B, 130 MB for a 12B. The base model is
+re-downloaded wherever the adapter is used.
+
+### Using it elsewhere (laptop, another GPU box, a later Colab)
+
+```bash
+hf auth login                                   # once per machine, same account or one with access
+hf download <user>/my-adapter --local-dir ./my-adapter
+```
+
+- vLLM: `--enable-lora --lora-modules my=<path or repo>`; on Colab,
+  `node colab.mjs vllm start <base> --vllm-args "--enable-lora --lora-modules my=<user>/my-adapter"`.
+- Transformers/PEFT: `PeftModel.from_pretrained(base, "<user>/my-adapter")`.
+- Resume training: download it into the job dir and load it as the starting
+  adapter; the example trainer resumes from `checkpoint-*` only.
 
 ## DSPy compile: `examples/dspy_compile.py`
 
