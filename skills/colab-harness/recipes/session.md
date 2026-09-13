@@ -62,6 +62,35 @@ in the ledger the next time `sessions` or `cost` finds them unreachable,
 using the last time the CLI saw them, so their cost can be slightly
 underestimated; `release` is exact.
 
+### Estimating a job before running it
+
+`units = rate × hours`. On the L4 at 1.54 units/h that is 0.026 units per
+minute, so a 10-minute job costs ≈0.26 units, 0.26% of the month. Measured
+on 2026-09-13, L4, including cold model loads:
+
+| Step | Time | L4 units |
+|---|---|---|
+| Runtime allocation + notebook setup | ~2 min | 0.05 |
+| faster-whisper large-v3, cold load + 19 s clip | 18 s | 0.01 |
+| large-v3, warm, per hour of audio (≈15 to 20× realtime) | 3 to 4 min | 0.10 |
+| pyannote venv build (first use per runtime) | ~1 min | 0.03 |
+| pyannote 3.1 diarization, per hour of audio | ~2 to 3 min | 0.07 |
+| YouTube download, 19 s clip incl. Deno install | ~30 s | 0.01 |
+| vLLM venv build (first use per runtime) | ~4 min | 0.10 |
+| vLLM 7B AWQ model load | ~2 min | 0.05 |
+| vLLM serving, per hour up | 60 min | 1.54 |
+| LoRA example, 0.5B, 60 steps on 300 rows | 53 s | 0.02 |
+| QLoRA 12B on ~10k examples (estimate) | 3 to 6 h | 5 to 9 |
+| DSPy compile example, 20 train / 40 dev | 22 s | 0.01 |
+
+Rule of thumb: everything short lives in the rounding error; the cost is
+the runtime being up. A session where you transcribe five hour-long
+recordings costs about the 25 minutes of work plus whatever idle time you
+leave before `release`, so release promptly and use the lease watchdog as
+the backstop. A T4 is roughly 40% slower on these workloads at a similar
+rate, so per job it costs slightly more; an A100 is 3 to 5× faster at 5 to
+8× the rate, so it only pays for latency, not for units.
+
 **Agent rule:** quote the per-hour cost when a session starts and the
 `keep --dry-run` figure before extending a lease or launching a job
 expected to take longer than 30 minutes. Report the session cost on
