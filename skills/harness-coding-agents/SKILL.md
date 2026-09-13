@@ -94,6 +94,11 @@ stdout/stderr per engine.
    is in `claude.md`; `claude.result.json` retains run metadata for diagnosis.
    If Claude emitted no JSON (for example on timeout), that raw file can be
    empty or malformed; check `summary.json` and `claude.stderr.txt` as well.
+   If a Claude review times out without a report, bound the next attempt to the
+   relevant source supplied inline, disable tools with `--tools ""`, and use
+   `--effort medium --output-format stream-json --verbose` in a monitored runner.
+   Preserve the same subscription/auth and isolation flags. Require the final
+   sentinel; initialization and file-read activity alone are not a review verdict.
 7. Synthesize only the useful evidence. Identify which engine supplied each
    important lead when provenance matters.
 
