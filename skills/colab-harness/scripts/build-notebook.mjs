@@ -26,9 +26,10 @@ One-time setup: run \`node colab.mjs init\` locally, copy the token it stores
 (\`pbcopy < ~/.colab-harness/token\`), and add it in the 🔑 Secrets panel as
 \`HARNESS_TOKEN\` with notebook access on. The token is then never printed.
 
-Keep this tab open: the final cell loops to keep the session alive. Close it
-(or Runtime → Disconnect) to end the session. The server binds to loopback and
-is reached only through the tunnel; every request needs the printed token.
+Keep this tab open: the final cell is the lease watchdog. It unassigns the
+runtime when the local side has been idle for 30 minutes or after
+\`node colab.mjs release\`. The server binds to loopback and is reached only
+through the tunnel; every request needs the shared token.
 `),
   code(`#@title 1) Config
 MOUNT_DRIVE = True  #@param {type:"boolean"}

@@ -17,14 +17,41 @@ local: node colab.mjs connect <url> <token> ←───────────
 
 ## One-time setup
 
-1. `node colab.mjs init` here. It stores a shared token in
-   `~/.colab-harness/token` (mode 600) and does not print it.
-2. In any Colab tab, 🔑 Secrets → add `HARNESS_TOKEN` with that value
-   (`pbcopy < ~/.colab-harness/token`), notebook access on. Add `HF_TOKEN`
-   too if gated Hugging Face models (Gemma, pyannote) are wanted.
+Requirements: Node 18+ on this machine; a Google account with **Colab Pro**
+(the L4 and longer sessions; the free tier's T4 works but disconnects
+sooner); nothing to install on the Colab side, the notebook does it.
 
-An agent must not type the token into the form; it is a credential. The
-user pastes it. From then on no secret is ever printed or read from a page.
+1. Generate the shared token here. It is written to `~/.colab-harness/token`
+   (mode 600) and never printed:
+
+   ```bash
+   cd <this skill>/scripts && node colab.mjs init
+   pbcopy < ~/.colab-harness/token        # macOS; on Linux: xclip -sel clip < ~/.colab-harness/token
+   ```
+
+2. Store it as a Colab secret. Open any notebook in Colab, for example the
+   harness notebook itself:
+   `https://colab.research.google.com/github/apresmoi/skills/blob/main/skills/colab-harness/Colab_Harness.ipynb`
+   In the **left sidebar** click the 🔑 key icon ("Secrets"), then
+   **+ Add new secret**. Name `HARNESS_TOKEN`, Value: paste. Switch on the
+   **Notebook access** toggle on that row. Secrets are per Google account,
+   so this is done once for every notebook you run.
+3. Optional: add `HF_TOKEN` the same way (a Hugging Face read token) for
+   gated models such as Gemma and pyannote. The notebook passes it to the
+   server when present.
+4. Verify: run the notebook once (see Per session). Cell 1 prints
+   `token: from Colab secret HARNESS_TOKEN`. If it prints `generated for this
+   session` instead, the secret is missing or its notebook-access toggle is
+   off; the notebook then falls back to a one-off token and prints it with
+   the URL, which still works for that session.
+
+What the token is: a shared secret between `colab.mjs` and the job server
+on the VM. It is not a Google credential. Rotate it with
+`node colab.mjs init --force` and update the Colab secret.
+
+An agent must never type the token into the Secrets form: it is a
+credential, and the user pastes it. The agent can open the panel and fill
+the name, nothing more.
 
 ## Per session
 
