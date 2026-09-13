@@ -29,7 +29,10 @@ const PROFILE = path.join(HOME, "chrome");
 const COOKIES = path.join(HOME, "google-cookies.txt");   // seeded by the user via `colab.mjs auth install`; never printed
 const CONFIG = path.join(HOME, "config.json");
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const NOTEBOOK = process.env.COLAB_NOTEBOOK ?? "https://colab.research.google.com/github/apresmoi/skills/blob/main/skills/colab-harness/Colab_Harness.ipynb";
+// Colab caches GitHub notebooks aggressively when opened by branch; opening by commit SHA
+// (--ref) pins the exact version. colab.mjs start resolves the SHA and passes it.
+const REF = (process.argv.includes("--ref") && process.argv[process.argv.indexOf("--ref") + 1]) || "main";
+const NOTEBOOK = process.env.COLAB_NOTEBOOK ?? `https://colab.research.google.com/github/apresmoi/skills/blob/${REF}/skills/colab-harness/Colab_Harness.ipynb`;
 const argv = process.argv.slice(2);
 const cmd = argv.find((a) => !a.startsWith("--")) ?? "start";
 const opt = {}; for (let i = 0; i < argv.length; i++) if (argv[i].startsWith("--")) { const k = argv[i].slice(2), v = argv[i + 1]; if (v !== undefined && !v.startsWith("--") && !["headed", "no-wait", "high-ram"].includes(k)) { opt[k] = v; i++; } else opt[k] = true; }
@@ -72,13 +75,20 @@ async function seedProfile(pw) {
   // Fresh profile from the cookie file: the only way auth ever enters the profile.
   const text = await readFile(COOKIES, "utf8").catch(() => null);
   if (text === null) throw new Error("NO_COOKIES");
-  const cookies = parseNetscape(text).filter((c) => /google\.com$|googleusercontent\.com$|colab\.research\.google\.com$/.test(c.domain.replace(/^\./, "")));
-  if (!cookies.length) throw new Error("NO_COOKIES");
+  // Only the core login cookies on .google.com. Seeding the full export (per-service cookies
+  // from mail, drive, pay, ...) made Google invalidate the whole session, logging the user out
+  // of their own Chrome. The reduced set, with first contact on google.com itself, is accepted.
+  const CORE = /^(SID|HSID|SSID|APISID|SAPISID|__Secure-1PSID|__Secure-3PSID|__Secure-1PSIDTS|__Secure-3PSIDTS|__Secure-1PSIDCC|__Secure-3PSIDCC|SIDCC|NID)$/;
+  const cookies = parseNetscape(text).filter((c) => c.domain === ".google.com" && CORE.test(c.name)).map((c) => ({ ...c, sameSite: /^__Secure-3P|^SSID$|^SAPISID$/.test(c.name) ? "None" : "Lax" }));
+  if (!cookies.some((c) => c.name === "SID" || c.name === "__Secure-1PSID")) throw new Error("NO_COOKIES");
   await rm(PROFILE, { recursive: true, force: true });
   const ctx = await launch(pw, false);
   await ctx.addCookies(cookies);
+  const page = ctx.pages()[0] ?? await ctx.newPage();
+  await page.goto("https://www.google.com/", { waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {});
+  await page.waitForTimeout(3000);
   await ctx.close();
-  log(`profile seeded with ${cookies.length} google cookies`);
+  log(`profile seeded with ${cookies.length} core google login cookies`);
   return cookies.length;
 }
 
@@ -103,22 +113,23 @@ async function dismissDialogs(page) {
 }
 
 async function menu(page, top, item) {
+  // Menu items carry their shortcut in the accessible name ("Run all⌘/Ctrl+F9"), so match by prefix.
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: new RegExp(`^${top}$`) }).first().click();
-  const it = page.getByText(item, { exact: true }).first();
+  const it = page.getByRole("menuitem", { name: new RegExp(`^${item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`) }).first();
   await it.waitFor({ timeout: 10000 });
   return it;
 }
 
 async function setRuntimeType(page) {
   await (await menu(page, "Runtime", "Change runtime type")).click();
-  const dlg = page.locator("[role=dialog]").last();
-  await dlg.waitFor({ timeout: 15000 });
-  const radio = dlg.getByText(new RegExp(`^${GPU}(\\s+GPU)?$`)).first();
-  if (!(await radio.count())) throw new Error(`GPU "${GPU}" is not offered in the runtime dialog`);
+  // The dialog body is inside <colab-runtime-attributes-selector>'s shadow DOM; role and
+  // text locators pierce it, [role=dialog] does not.
+  const radio = page.getByRole("radio", { name: new RegExp(`^${GPU}( GPU)?$`) }).first();
+  await radio.waitFor({ timeout: 15000 }).catch(() => { throw new Error(`GPU "${GPU}" is not offered in the runtime dialog`); });
   await radio.click();
-  if (opt["high-ram"]) { const hr = dlg.getByText("High-RAM", { exact: true }).first(); if (await hr.count()) await hr.click(); }
-  await dlg.getByRole("button", { name: "Save", exact: true }).click();
+  if (opt["high-ram"]) { const hr = page.getByRole("switch", { name: /High-RAM/ }).first(); if (await hr.count()) await hr.click(); }
+  await page.getByRole("button", { name: "Save", exact: true }).first().click();
   log(`runtime type: ${GPU}`);
   await page.waitForTimeout(1500);
 }
@@ -127,7 +138,9 @@ async function waitForTunnel(page, timeoutMs = 6 * 60 * 1000) {
   const t0 = Date.now(); let lastGpu = null;
   while (Date.now() - t0 < timeoutMs) {
     await dismissDialogs(page);
-    const text = await page.evaluate(() => document.body.innerText).catch(() => "");
+    // Cell outputs render in sandboxed iframes; scan every frame, not just the top document.
+    let text = "";
+    for (const f of page.frames()) text += "\n" + (await f.evaluate(() => document.body?.innerText ?? "").catch(() => ""));
     const m = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
     if (m) return m[0];
     const g = text.match(/NVIDIA [^\n,]+/); if (g && g[0] !== lastGpu) { lastGpu = g[0]; log(`VM up: ${lastGpu}`); }
@@ -155,10 +168,20 @@ async function main() {
     }
     if (cmd === "stop") {
       await openNotebook(page);
+      // Manage sessions lists every runtime of this account; terminate them all (the X icon per row).
+      await (await menu(page, "Runtime", "Manage sessions")).click(); await page.waitForTimeout(2500);
+      let killed = 0;
+      for (let i = 0; i < 8; i++) { const x = page.getByRole("button", { name: /Terminate|terminate/ }).first(); if (!(await x.isVisible().catch(() => false))) break; await x.click(); await page.waitForTimeout(800); const yes = page.getByRole("button", { name: /^(Yes|Terminate|OK)$/ }).last(); if (await yes.isVisible().catch(() => false)) await yes.click(); killed++; await page.waitForTimeout(2000); }
+      if (killed) { console.log(`terminated ${killed} session(s)`); return; }
+      await page.keyboard.press("Escape");
       const item = await menu(page, "Runtime", "Disconnect and delete runtime");
-      if (!(await item.isEnabled().catch(() => false))) { console.log("no runtime attached"); return; }
-      await item.click(); await page.waitForTimeout(800); await page.getByRole("button", { name: /^Yes$/ }).first().click().catch(() => {});
-      console.log("runtime deleted"); return;
+      if ((await item.getAttribute("aria-disabled")) === "true" || /disabled/.test((await item.getAttribute("class")) ?? "")) { console.log("no runtime attached"); return; }
+      await item.click(); await page.waitForTimeout(1000);
+      const yes = page.getByRole("button", { name: /^(Yes|OK)$/ }).first();
+      if (await yes.isVisible().catch(() => false)) await yes.click();
+      await page.waitForTimeout(3000);
+      const t = await page.evaluate(() => document.body.innerText);
+      console.log(/Connected to/.test(t) ? "still connected; check Runtime → Manage sessions" : "runtime deleted"); return;
     }
     log(`opening the notebook (profile ${PROFILE}, ${opt.headed ? "headed" : "headless"})`);
     await openNotebook(page);

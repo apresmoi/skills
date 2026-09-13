@@ -32,8 +32,8 @@ runtime when the local side has been idle for 30 minutes or after
 through the tunnel; every request needs the shared token.
 `),
   code(`#@title 1) Config
-MOUNT_DRIVE = True  #@param {type:"boolean"}
-#@markdown Mount Google Drive so model caches persist across sessions (recommended).
+MOUNT_DRIVE = False  #@param {type:"boolean"}
+#@markdown Mount Google Drive for model caches (needs a consent click every runtime; leave off for unattended starts).
 DRIVE_CACHE_DIR = "colab-harness"  #@param {type:"string"}
 #@markdown Folder under MyDrive for the HuggingFace cache and job archive.
 HARNESS_PORT = 8787

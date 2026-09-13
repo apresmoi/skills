@@ -84,7 +84,7 @@ const parse = (argv) => {
   const pos = [], opt = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith("--")) { const n = argv[i + 1]; if (["args", "vllm-args"].includes(a.slice(2)) && n !== undefined) { opt[a.slice(2)] = n; i++; continue; } if (["follow", "no-open", "all", "no-cookies", "fetch-audio", "word-timestamps", "force", "dry-run", "public", "json"].includes(a.slice(2)) || n === undefined || n.startsWith("--")) opt[a.slice(2)] = true; else { opt[a.slice(2)] = n; i++; } }
+    if (a.startsWith("--")) { const n = argv[i + 1]; if (["args", "vllm-args"].includes(a.slice(2)) && n !== undefined) { opt[a.slice(2)] = n; i++; continue; } if (["follow", "no-open", "all", "no-cookies", "fetch-audio", "word-timestamps", "force", "dry-run", "public", "json", "no-seed"].includes(a.slice(2)) || n === undefined || n.startsWith("--")) opt[a.slice(2)] = true; else { opt[a.slice(2)] = n; i++; } }
     else pos.push(a);
   }
   return { pos, opt };
@@ -356,8 +356,12 @@ const main = async () => {
       catch { die("no token given and none stored; run: node colab.mjs init"); }
     }
     if (!url) {
-      // No URL given: find the runtime the notebook published, newest first, skipping
-      // ones already bound to another session and retiring ones that no longer answer.
+      // No URL given: first the one the local starter just brought up (last-start.json),
+      // then the ones the notebook published to the hub, newest first, skipping ones
+      // already bound to another session and retiring ones that no longer answer.
+      try { const rec = JSON.parse(await readFile(path.join(HOME, "last-start.json"), "utf8")); if (rec.url && await probe(rec.url, token)) { url = rec.url; console.error(`using the runtime started locally at ${rec.started} (${rec.gpu})`); } } catch { /* none */ }
+    }
+    if (!url) {
       const d = await discoverRuntimes();
       if (d.error) die(`connect: no URL given and ${d.error}; pass the URL printed by the notebook's cell 4`);
       const taken = new Set((await savedSessions()).filter((s) => s.name !== SESSION_NAME).map((s) => s.url));
@@ -440,6 +444,7 @@ repeat steps 2 and 3.`); return;
       const { chmod } = await import("node:fs/promises"); await chmod(GOOGLE_COOKIES, 0o600);
       const exp = g.map((f) => Number(f[4])).filter((n) => n > 0); const earliest = exp.length ? new Date(Math.min(...exp) * 1000).toISOString().slice(0, 10) : "session-only";
       console.log(`installed from ${path.basename(src)} → ${GOOGLE_COOKIES} · ${g.length} google cookies of ${rows.length} · earliest expiry ${earliest}`);
+      if (opt["no-seed"]) return;
       console.log("seeding the playwright profile and checking the sign-in…");
       process.exit(await runStart("seed"));
     }
@@ -456,7 +461,8 @@ repeat steps 2 and 3.`); return;
     // Detached: colab-start keeps the notebook tab open (the watchdog cell) until the runtime dies.
     const { openSync } = await import("node:fs"); await mkdir(HOME, { recursive: true, mode: 0o700 });
     const logFile = path.join(HOME, "start.log"); const fd = openSync(logFile, "a");
-    const args = [path.join(SCRIPTS, "colab-start.mjs"), "start", "--gpu", opt.gpu ?? cfg.gpu ?? "L4", ...(opt.headed ? ["--headed"] : [])];
+    let ref = "main"; try { ref = execFileSync("git", ["ls-remote", "https://github.com/apresmoi/skills", "main"], { stdio: ["ignore", "pipe", "ignore"], timeout: 15000 }).toString().slice(0, 40); } catch { /* offline: branch */ }
+    const args = [path.join(SCRIPTS, "colab-start.mjs"), "start", "--gpu", opt.gpu ?? cfg.gpu ?? "L4", "--ref", ref, ...(opt.headed ? ["--headed"] : [])];
     const child = spawn(process.execPath, args, { detached: true, stdio: ["ignore", fd, fd] }); child.unref();
     console.error(`starting a ${opt.gpu ?? cfg.gpu ?? "L4"} runtime through playwright (pid ${child.pid}, log ${logFile}); waiting for the tunnel URL…`);
     const t0 = Date.now(); const lastStart = path.join(HOME, "last-start.json"); let before = null; try { before = (await stat(lastStart)).mtimeMs; } catch { /* none */ }
