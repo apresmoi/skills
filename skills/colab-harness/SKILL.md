@@ -13,8 +13,8 @@ instruction is "run X on Colab". Everything else is the agent's job:
                         ↓                       │
       agent: node colab.mjs check               │
                         ↓                       │
-  no runtime → agent opens the notebook,        │
-  picks L4, Run all (Claude in Chrome)          │
+  no runtime → node colab.mjs start             │
+  (playwright headless, or the agent in Chrome) │
                         ↓                       │
   Colab: fresh VM, fresh random tunnel URL,     │
   published to a private HF dataset repo        │ next task: same, from zero
@@ -31,13 +31,15 @@ instruction is "run X on Colab". Everything else is the agent's job:
 configured, whether a runtime is up or published, and prints the exact next
 step. Its exit code is 0 when there is something to use.
 
-Why there is a "start the runtime" step at all: Colab has no API to allocate
-a VM, so a browser must click Run all once per session, and every session
-gets a new random tunnel address. The notebook publishes that address to
-`<hf-user>/colab-harness-state` (private), so `connect` needs no argument
-and nobody ever copies a URL. An agent with a browser tool does the click
-itself; an agent without one asks the user for that single click and
-nothing else. Never ask the user for a URL.
+Why there is a "start the runtime" step at all: Colab has no API to
+allocate a VM, so a browser must click Run all once per session, and every
+session gets a new random tunnel address. Both are absorbed: `start` does
+the click through the configured *starter* (playwright: the skill's own
+cookie-seeded Chrome profile, headless; chrome: the agent driving the
+Claude in Chrome extension), and the notebook publishes the address to
+`<hf-user>/colab-harness-state` (private) so `connect` needs no argument.
+Never ask the user for a URL. Ask once which starter they prefer if none is
+set; accept "this one in chrome" / "this one in playwright" as `--via`.
 
 All commands live in `scripts/colab.mjs`; `node colab.mjs --help` lists
 them. Each task below has one recipe; read only the one you need.
@@ -45,6 +47,7 @@ them. Each task below has one recipe; read only the one you need.
 | Task | Recipe |
 |---|---|
 | First-time setup: the shared token as a Colab secret | `recipes/setup-token.md` |
+| How runtimes get started: the starter preference (playwright, headless, cookie-seeded / chrome), Google auth by cookie export, debugging lost auth | `recipes/setup-starter.md` |
 | Hugging Face token: gated models (Gemma, pyannote) and pushing adapters to private repos | `recipes/setup-hf.md` |
 | YouTube downloads: the cookie file | `recipes/setup-youtube-cookies.md` |
 | Start a session, connect, keep it alive, release it, run several | `recipes/session.md` |
@@ -57,8 +60,9 @@ them. Each task below has one recipe; read only the one you need.
 1. **Never type a credential into Colab or read one off a page.** The
    harness token is pasted by the user once; the YouTube cookie file is
    seeded by the user and never opened, printed, or copied by an agent.
-   Reading the tunnel URL off the notebook page is allowed but no longer
-   needed: `connect` finds it on the hub.
+   Google auth for the playwright starter is a cookie export the user
+   installs with `auth install`; same rules as the YouTube file. Reading
+   the tunnel URL off the notebook page is allowed but no longer needed.
 2. **A runtime costs compute units every minute.** Before starting a
    session or a long job, state the cost: `connect` prints the GPU's rate
    as units per hour and as a share of the monthly allowance; `keep

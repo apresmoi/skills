@@ -3,18 +3,17 @@
 ## Start a session
 
 `node colab.mjs check` first. If it says READY, skip to the jobs. If it says
-NO RUNTIME, start one:
+NO RUNTIME:
 
-1. **Agent with Claude in Chrome: do this yourself.** Open
-   `https://colab.research.google.com/github/apresmoi/skills/blob/main/skills/colab-harness/Colab_Harness.ipynb`
-   in a fresh tab (a stale tab keeps a cached copy of the notebook).
-   Runtime → Change runtime type → **L4** (the reloaded notebook defaults to
-   "GPU" = T4). Runtime → **Run all** → "Run anyway" on the GitHub warning.
-   Leave `MOUNT_DRIVE` unticked unless the user wants Drive (consent click
-   every runtime). Nothing on the page needs to be read or typed; the
-   secrets are already there.
-   **Agent without a browser tool:** ask the user for that one click, Run
-   all, on that link. Do not ask for a URL.
+1. `node colab.mjs start` (add `--via chrome` or `--via playwright` to
+   override the preference, `--gpu T4` for a cheaper card). With the
+   playwright starter this is headless and prints the tunnel URL after
+   about two minutes; the process stays alive in the background holding
+   the notebook tab open for the lease watchdog and exits when the runtime
+   is gone (log: `~/.colab-harness/start.log`). With the chrome starter the
+   agent does the clicks itself: open the notebook link in a fresh tab,
+   Runtime → Change runtime type → **L4**, Run all, "Run anyway".
+   Auth or starter problems: `recipes/setup-starter.md`.
 2. About two minutes later the notebook has published its tunnel URL to
    `<hf-user>/colab-harness-state` (private dataset repo, using the
    `HF_TOKEN` secret). Then, from `scripts/`:

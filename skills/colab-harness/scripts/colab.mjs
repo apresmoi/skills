@@ -6,10 +6,13 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const HOME = path.join(process.env.COLAB_HARNESS_HOME ?? path.join(homedir(), ".colab-harness"));
 const TOKEN_FILE = path.join(HOME, "token");
+const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
+const require_cp = () => ({ execFile, spawn });
 const YT_COOKIES = path.join(HOME, "youtube-cookies.txt");   // seeded by the user, never read by an agent
 // Sessions are named so several runtimes can be driven at once:
 //   --session train   or   COLAB_SESSION=train   (default: "default")
@@ -21,6 +24,14 @@ const USAGE = `colab-harness — use a Colab GPU runtime from here.
 
   node colab.mjs init                        generate the shared token once (store it as Colab secret HARNESS_TOKEN)
   node colab.mjs check                       START HERE: what is configured, what is up, what to do next
+  node colab.mjs start [--via playwright|chrome] [--gpu L4] [--headed]
+                                             start a runtime with no human: playwright drives a dedicated Google-signed-in
+                                             Chrome profile headless; chrome means the agent drives the Claude extension
+  node colab.mjs config [set starter playwright|chrome | set gpu L4 | show]   preferences (~/.colab-harness/config.json)
+  node colab.mjs auth                        the onboarding message: how to export Google cookies for the playwright starter
+  node colab.mjs auth install [file]         file the export (default: newest google/colab *cookies*.txt in ~/Downloads)
+                                             into ~/.colab-harness/google-cookies.txt and seed the profile; prints counts only
+  node colab.mjs auth status | remove        is the profile signed in (account label only) / delete cookies + profile
   node colab.mjs connect [url] [token]       save this session; with no url, finds the runtime the notebook
                                              published to Hugging Face (<user>/colab-harness-state, private)
   node colab.mjs sessions                    list saved sessions and whether each still answers
@@ -85,7 +96,10 @@ const parse = (argv) => {
 const DEFAULT_RATES = { "NVIDIA L4": { rate: 1.54, measured: true }, "Tesla T4": { rate: 1.44, measured: false }, "NVIDIA A100-SXM4-40GB": { rate: 8.47, measured: false }, "NVIDIA A100-SXM4-80GB": { rate: 11.77, measured: false } };
 const BUDGET_FILE = path.join(HOME, "budget.json");
 const LEDGER_FILE = path.join(HOME, "ledger.json");
-const CATALOG_FILE = path.join(HOME, "catalog.json");   // trained models: name, description, owner project, hub repo, metrics
+const CATALOG_FILE = path.join(HOME, "catalog.json");
+const CONFIG_FILE = path.join(HOME, "config.json");   // preferences: starter (playwright|chrome), playwright_roots, gpu
+const loadConfig = async () => loadJson(CONFIG_FILE, {});
+const saveConfig = async (c) => saveJson(CONFIG_FILE, c);   // trained models: name, description, owner project, hub repo, metrics
 
 const git = (args, cwd) => { try { return execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); } catch { return null; } };
 
@@ -382,6 +396,79 @@ const main = async () => {
     return;
   }
 
+  if (cmd === "config") {
+    const cfg = await loadConfig(); const [sub, key, value] = rest;
+    if (sub === "set") { if (!["starter", "gpu"].includes(key)) die("config set starter playwright|chrome | config set gpu L4"); if (key === "starter" && !["playwright", "chrome"].includes(value)) die("starter must be playwright or chrome"); cfg[key] = value; await saveConfig(cfg); }
+    console.log(JSON.stringify(cfg, null, 2)); return;
+  }
+
+  if (cmd === "auth") {
+    // Google auth for the playwright starter, handled like the YouTube cookies: the user
+    // exports, one command files it, nothing is ever read, printed, or typed by an agent.
+    const GOOGLE_COOKIES = path.join(HOME, "google-cookies.txt");
+    const { readdir, rename, unlink, rm } = await import("node:fs/promises");
+    const runStart = (sub) => new Promise((r) => spawn(process.execPath, [path.join(SCRIPTS, "colab-start.mjs"), sub], { stdio: "inherit" }).on("exit", r));
+    const [sub = "message", fileArg] = rest;
+    if (sub === "message") {
+      console.log(`To start Colab runtimes without anyone in the loop, the skill drives its own Chrome profile.
+It signs in with cookies you export once; nothing is typed and the file never passes through the chat.
+
+1. In the Chrome where you are logged into Google Colab, install "Get cookies.txt LOCALLY":
+   https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc
+2. Open https://colab.research.google.com/ logged in as the account with Colab Pro, click the
+   extension icon, choose Export (current site). A file like google.com_cookies.txt lands in Downloads.
+3. Run:
+   node ${path.join(SCRIPTS, "colab.mjs")} auth install
+   It moves the newest Google export from Downloads to ~/.colab-harness/google-cookies.txt
+   (owner-only), seeds the profile, and prints only the cookie count and the account it signed in as.
+
+When Google expires the session, weeks or months later, a start fails with AUTH_EXPIRED and you
+repeat steps 2 and 3.`); return;
+    }
+    if (sub === "install") {
+      let src = fileArg;
+      if (!src) { const dl = path.join(homedir(), "Downloads"); const files = (await readdir(dl).catch(() => [])).filter((f) => /cookies.*\.txt$/i.test(f) && /google|colab/i.test(f)); if (!files.length) die(`no Google cookie export in ${dl}; run: node colab.mjs auth   (for the steps), or pass the file path`); const withTime = await Promise.all(files.map(async (f) => ({ f, t: (await stat(path.join(dl, f))).mtimeMs }))); src = path.join(dl, withTime.sort((a, b) => b.t - a.t)[0].f); }
+      const text = await readFile(src, "utf8").catch(() => die(`cannot read ${src}`));
+      const rows = text.split("\n").filter((l) => l && !l.startsWith("#") || l.startsWith("#HttpOnly_")).map((l) => l.replace(/^#HttpOnly_/, "").split("\t")).filter((f) => f.length >= 7);
+      const g = rows.filter((f) => /google\.com$|googleusercontent\.com$/.test(f[0].replace(/^\./, "")));
+      if (!g.length) die(`${path.basename(src)} holds no google.com cookies; export from https://colab.research.google.com/ while logged in`);
+      await mkdir(HOME, { recursive: true, mode: 0o700 });
+      await rename(src, GOOGLE_COOKIES).catch(async () => { await writeFile(GOOGLE_COOKIES, text, { mode: 0o600 }); await unlink(src).catch(() => {}); });
+      const { chmod } = await import("node:fs/promises"); await chmod(GOOGLE_COOKIES, 0o600);
+      const exp = g.map((f) => Number(f[4])).filter((n) => n > 0); const earliest = exp.length ? new Date(Math.min(...exp) * 1000).toISOString().slice(0, 10) : "session-only";
+      console.log(`installed from ${path.basename(src)} → ${GOOGLE_COOKIES} · ${g.length} google cookies of ${rows.length} · earliest expiry ${earliest}`);
+      console.log("seeding the playwright profile and checking the sign-in…");
+      process.exit(await runStart("seed"));
+    }
+    if (sub === "status") { try { await stat(GOOGLE_COOKIES); } catch { console.log(`google cookies: none (${GOOGLE_COOKIES}); run: node colab.mjs auth`); process.exit(1); } process.exit(await runStart("status")); }
+    if (sub === "remove") { await unlink(GOOGLE_COOKIES).catch(() => {}); await rm(path.join(HOME, "chrome"), { recursive: true, force: true }); console.log("removed the google cookie file and the playwright profile"); return; }
+    die("usage: auth [message|install [file]|status|remove]");
+  }
+
+  if (cmd === "start") {
+    const cfg = await loadConfig(); const via = opt.via ?? cfg.starter;
+    if (!via) die("no starter set. Ask the user: playwright (headless, own Google-signed-in profile) or chrome (the Claude extension)? Then: node colab.mjs config set starter <choice>, or pass --via for this run.");
+    if (via === "chrome") { console.log("starter=chrome: drive the Claude in Chrome extension yourself: open the notebook, Runtime → Change runtime type → " + (opt.gpu ?? cfg.gpu ?? "L4") + ", Run all, then `node colab.mjs connect`. Or: start --via playwright"); return; }
+    if (via !== "playwright") die("--via must be playwright or chrome");
+    // Detached: colab-start keeps the notebook tab open (the watchdog cell) until the runtime dies.
+    const { openSync } = await import("node:fs"); await mkdir(HOME, { recursive: true, mode: 0o700 });
+    const logFile = path.join(HOME, "start.log"); const fd = openSync(logFile, "a");
+    const args = [path.join(SCRIPTS, "colab-start.mjs"), "start", "--gpu", opt.gpu ?? cfg.gpu ?? "L4", ...(opt.headed ? ["--headed"] : [])];
+    const child = spawn(process.execPath, args, { detached: true, stdio: ["ignore", fd, fd] }); child.unref();
+    console.error(`starting a ${opt.gpu ?? cfg.gpu ?? "L4"} runtime through playwright (pid ${child.pid}, log ${logFile}); waiting for the tunnel URL…`);
+    const t0 = Date.now(); const lastStart = path.join(HOME, "last-start.json"); let before = null; try { before = (await stat(lastStart)).mtimeMs; } catch { /* none */ }
+    while (Date.now() - t0 < 7 * 60 * 1000) {
+      await new Promise((r) => setTimeout(r, 5000));
+      try { const st = await stat(lastStart); if (st.mtimeMs !== before) { const rec = JSON.parse(await readFile(lastStart, "utf8")); console.log(`runtime up: ${rec.url}`); console.error("next: node colab.mjs connect"); return; } } catch { /* not yet */ }
+      const tail = (await readFile(logFile, "utf8").catch(() => "")).trim().split("\n").slice(-1)[0] ?? "";
+      if (/AUTH_EXPIRED|NO_COOKIES|not signed in/.test(tail)) die("start failed: Google auth missing or expired for the playwright profile. Send the user the steps from `node colab.mjs auth`, then they run `auth install`.", 3);
+      if (/colab-start: /.test(tail) && !/playwright from/.test(tail)) die(`start failed: ${tail.replace(/^.*colab-start: /, "")}`, 1);
+      let alive = true; try { process.kill(child.pid, 0); } catch { alive = false; }
+      if (!alive) die(`start failed; last log line: ${tail}`, 1);
+    }
+    die("start: no tunnel URL after 7 min; see " + logFile, 1);
+  }
+
   if (cmd === "check") {
     // The readiness report an agent runs first: what is configured, what is up, what to do next.
     let ok = true; const say = (line) => console.log(line);
@@ -391,6 +478,10 @@ const main = async () => {
     say(who?.name ? `hugging face (local): ${who.name} · ${who.auth?.accessToken?.role ?? "?"} token → bare \`connect\` and \`models sync\` work` : "hugging face (local): no login → \`connect\` needs the URL from the notebook; fix: hf auth login");
     try { const st = await stat(YT_COOKIES); say(`youtube cookies: present (${st.size} bytes; \`cookies status\` for expiry)`); } catch { say("youtube cookies: none (only needed for youtube/pipeline; recipes/setup-youtube-cookies.md)"); }
     const cat = await loadCatalog(); say(`catalog: ${cat.length} trained model${cat.length === 1 ? "" : "s"} (\`models\`)`);
+    const cfg = await loadConfig();
+    if (!cfg.starter) say("starter: NOT SET → ask the user once: playwright (headless, own Google profile) or chrome (the Claude extension); then: node colab.mjs config set starter <choice>");
+    else if (cfg.starter === "playwright") { const st = await new Promise((r) => { const { execFile } = require_cp(); execFile(process.execPath, [path.join(SCRIPTS, "colab-start.mjs"), "status"], { timeout: 90000 }, (e, out) => r((out || "").trim() || "status check failed")); }); say(`starter: playwright · ${st}`); }
+    else say(`starter: chrome (the agent drives the Claude in Chrome extension; needs that tool in this session)`);
     const sessions = await savedSessions(); let live = 0;
     for (const s of sessions) { const h = token ? await probe(s.url, s.token ?? token) : null; if (h) { live++; say(`session ${s.name}: UP · ${h.gpu?.name ?? "no gpu"} · lease ${Math.max(0, Math.floor(h.lease.expires_in_s / 60))} min · ${hfLine(h)}`); } else { say(`session ${s.name}: down (${s.url})`); await closeLedger(s.url); } }
     if (!sessions.length) say("sessions: none saved");
@@ -399,7 +490,9 @@ const main = async () => {
     say("");
     if (live) say(`READY: ${live} runtime${live === 1 ? "" : "s"} up. Use it, then \`release\`.`);
     else if (published) say("READY TO CONNECT: run \`node colab.mjs connect\`.");
-    else if (ok) { say("NO RUNTIME. Start one yourself if you control a browser (Claude in Chrome): open"); say(`  ${nbUrl}`); say("  Runtime → Change runtime type → L4 · Run all · wait ~2 min · then: node colab.mjs connect" + (who?.name ? "" : " <url from cell 4>")); say("Without a browser tool, ask the user for exactly that one click (Run all), nothing else."); }
+    else if (ok && cfg.starter === "playwright") say("NO RUNTIME. Start one: node colab.mjs start   (then: node colab.mjs connect)");
+    else if (ok && cfg.starter === "chrome") { say("NO RUNTIME. Start one yourself with the Claude in Chrome extension: open"); say(`  ${nbUrl}`); say("  Runtime → Change runtime type → L4 · Run all · wait ~2 min · then: node colab.mjs connect"); say("No extension in this session? Use: node colab.mjs start --via playwright"); }
+    else if (ok) say("NO RUNTIME, and no starter preference. Ask the user which to use, save it with `config set starter`, then `start`.");
     else say("NOT CONFIGURED: fix the items marked MISSING first (recipes/setup-token.md).");
     process.exit(live || published ? 0 : 1);
   }
