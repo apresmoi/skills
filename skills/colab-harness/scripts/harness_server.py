@@ -153,7 +153,7 @@ def new_job(kind: str, params: dict) -> dict:
 def public(job: dict) -> dict:
     out = {k: v for k, v in job.items() if k != "dir"}
     d = Path(job["dir"])
-    out["files"] = sorted(p.name for p in d.iterdir() if p.is_file()) if d.exists() else []
+    out["files"] = sorted(str(p.relative_to(d)) for p in d.rglob("*") if p.is_file()) if d.exists() else []
     return out
 
 
@@ -197,7 +197,7 @@ def get_job(jid: str):
     return public(jobs[jid])
 
 
-@app.get("/jobs/{jid}/files/{name}")
+@app.get("/jobs/{jid}/files/{name:path}")
 def get_file(jid: str, name: str):
     if jid not in jobs:
         raise HTTPException(404, "no such job")

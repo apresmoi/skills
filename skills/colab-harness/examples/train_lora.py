@@ -23,6 +23,8 @@ a = p.parse_args()
 
 # deps: torch is already in Colab; the rest is small
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "trl>=0.20", "peft", "datasets", "accelerate"], check=True)
+# Colab ships torchao 0.10, which PEFT refuses (needs >=0.16 or none); LoRA does not use it.
+subprocess.run([sys.executable, "-m", "pip", "uninstall", "-q", "-y", "torchao"], check=False)
 
 import torch
 from datasets import load_dataset
@@ -46,7 +48,7 @@ model = AutoModelForCausalLM.from_pretrained(a.model, dtype=torch.bfloat16, devi
 cfg = SFTConfig(
     output_dir=str(out), max_steps=a.steps, per_device_train_batch_size=4, gradient_accumulation_steps=2,
     learning_rate=a.lr, logging_steps=5, save_steps=a.save_every, save_total_limit=2, bf16=True,
-    max_length=a.max_len, report_to=[], lr_scheduler_type="cosine", warmup_ratio=0.1,
+    max_length=a.max_len, report_to=[], lr_scheduler_type="cosine", warmup_steps=max(1, a.steps // 10),
 )
 lora = LoraConfig(r=a.rank, lora_alpha=2 * a.rank, lora_dropout=0.05, task_type="CAUSAL_LM",
                   target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
@@ -68,8 +70,8 @@ print("SUMMARY", json.dumps(summary), flush=True)
 # smoke test: one generation with the adapter
 model.eval()
 msgs = [{"role": "user", "content": "Give three tips for staying focused while studying."}]
-ids = tok.apply_chat_template(msgs, add_generation_prompt=True, return_tensors="pt").to(model.device)
+enc = tok.apply_chat_template(msgs, add_generation_prompt=True, return_tensors="pt", return_dict=True).to(model.device)
 with torch.no_grad():
-    gen = model.generate(ids, max_new_tokens=80, do_sample=False)
-print("SAMPLE:", tok.decode(gen[0][ids.shape[1]:], skip_special_tokens=True).strip()[:400], flush=True)
+    gen = model.generate(**enc, max_new_tokens=80, do_sample=False)
+print("SAMPLE:", tok.decode(gen[0][enc["input_ids"].shape[1]:], skip_special_tokens=True).strip()[:400], flush=True)
 print("=== TRAIN COMPLETE ===")

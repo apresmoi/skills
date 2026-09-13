@@ -25,7 +25,7 @@ const USAGE = `colab-harness — use a Colab GPU runtime from here.
   node colab.mjs release                     stop vLLM and unassign the runtime (the kill switch)
   node colab.mjs jobs                        list jobs
   node colab.mjs job <id>                    show one job
-  node colab.mjs fetch <id> [--out DIR]      download a job's files
+  node colab.mjs fetch <id> [--out DIR] [--all]   download a job's files (--all includes trainer checkpoints)
   node colab.mjs vllm start <model> [--max-model-len N] [--vllm-args "..."]   start vLLM (installs on first use)
   node colab.mjs vllm status | stop
   node colab.mjs chat "<prompt>" [--model M] one non-streamed completion through the tunnel
@@ -96,14 +96,19 @@ const submit = (session, kind, params) => {
   return api(session, "POST", "/jobs", { body: form });
 };
 
-const fetchFiles = async (session, job, outDir) => {
+const fetchFiles = async (session, job, outDir, { all = false } = {}) => {
   await mkdir(outDir, { recursive: true });
+  let skipped = 0;
   for (const name of job.files ?? []) {
     if (name.startsWith("input")) continue;
+    if (!all && /^checkpoint-\d+\//.test(name)) { skipped++; continue; }   // trainer checkpoints: big, --all to fetch
     const res = await api(session, "GET", `/jobs/${job.id}/files/${name}`, { raw: true });
-    await writeFile(path.join(outDir, name), Buffer.from(await res.arrayBuffer()));
-    console.error(`saved ${path.join(outDir, name)}`);
+    const dest = path.join(outDir, name);
+    await mkdir(path.dirname(dest), { recursive: true });
+    await writeFile(dest, Buffer.from(await res.arrayBuffer()));
+    console.error(`saved ${dest}`);
   }
+  if (skipped) console.error(`skipped ${skipped} checkpoint files (pass --all to fetch them)`);
 };
 
 const main = async () => {
@@ -165,7 +170,7 @@ const main = async () => {
   if (cmd === "job") { console.log(JSON.stringify(await api(session, "GET", `/jobs/${rest[0]}`), null, 2)); return; }
   if (cmd === "fetch") {
     const job = await api(session, "GET", `/jobs/${rest[0]}`);
-    await fetchFiles(session, job, opt.out ?? path.join("colab-jobs", job.id));
+    await fetchFiles(session, job, opt.out ?? path.join("colab-jobs", job.id), { all: "all" in opt });
     return;
   }
 
@@ -207,7 +212,7 @@ const main = async () => {
     const job = await submit(session, "script", params);
     const done = await waitJob(session, job.id);
     const outDir = opt.out ?? path.join("colab-jobs", job.id);
-    await fetchFiles(session, done, outDir);
+    await fetchFiles(session, done, outDir, { all: "all" in opt });
     if (done.status === "failed") die(`script failed: ${done.error}\n(logs in ${outDir})`, 1);
     process.stdout.write(done.result.stdout_tail);
     console.error(`done; files in ${outDir}`);

@@ -87,6 +87,22 @@ never touches Colab's own torch, then blocks until the model is loaded.
 key; streaming works. On the VM itself, scripts reach it at `VLLM_BASE_URL`
 with no tunnel in the loop.
 
+## Examples (in `examples/`)
+
+- `train_lora.py`: LoRA fine-tune with TRL and PEFT. Defaults to Qwen2.5
+  0.5B Instruct on 300 rows of alpaca-cleaned for 60 steps; `--model`,
+  `--dataset`, `--samples`, `--steps`, `--rank`. Saves `adapter/`,
+  checkpoints, `train_log.json`, prints a `SUMMARY` line and a sample
+  generation. Resumes from a checkpoint in the job dir if one exists.
+  `node colab.mjs script examples/train_lora.py --args "--steps 60"`
+- `dspy_compile.py`: DSPy BootstrapFewShot on SST-2 sentiment against the
+  vLLM on the VM (`VLLM_BASE_URL`), dev accuracy before and after, saves
+  `compiled_program.json` and `summary.json`. Needs `vllm start` first.
+  `node colab.mjs script examples/dspy_compile.py --args "--train 20 --dev 40"`
+
+Run training before starting vLLM, or stop vLLM first: it reserves 90% of
+GPU memory and a trainer will OOM beside it.
+
 ## What runs on the VM
 
 `scripts/harness_server.py`, embedded into the notebook by
