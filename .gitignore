@@ -6,3 +6,6 @@ package-lock.json
 # deep-research run artefacts (intakes, captured replies)
 skills/deep-research/research/
 *.reply.html
+
+# colab-harness fetched job outputs
+colab-jobs/

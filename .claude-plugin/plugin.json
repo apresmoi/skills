@@ -20,6 +20,9 @@
     "subscription",
     "harness",
     "ascii",
-    "diagram"
+    "diagram",
+    "colab",
+    "whisper",
+    "vllm"
   ]
 }

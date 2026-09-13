@@ -7,6 +7,7 @@ Antigravity, or dropped in by hand anywhere that reads `SKILL.md`.
 | Skill | What it does |
 |---|---|
 | [`harness-coding-agents`](skills/harness-coding-agents/SKILL.md) | Run the Codex, Grok, Antigravity, and Claude Code CLIs as bounded read-only consultants or explicitly authorised implementers. Preflights binaries and logins, captures per-engine reports. |
+| [`colab-harness`](skills/colab-harness/SKILL.md) | Use a Colab GPU runtime as a job server from your machine through a cloudflared tunnel: faster-whisper transcription, shell jobs, and a vLLM OpenAI endpoint. One click per session, no browser automation. |
 | [`arrow-diagram`](skills/arrow-diagram/SKILL.md) | Render aligned ASCII arrow diagrams (fan-out, fan-in, decision trees, retry loops, nesting) from a small JSON spec. Width-aware for CJK and emoji labels; refuses shapes it cannot draw instead of half-drawing them. |
 | [`deep-research`](skills/deep-research/SKILL.md) | Run a deep-research prompt through a logged-in ChatGPT Pro or SuperGrok session in a real Chrome, wait for the report, and capture it into an intake file. Runs inside a dedicated project so it never clutters chat history. |
 
@@ -46,6 +47,7 @@ git clone git@github.com:apresmoi/skills.git ~/Documents/skills
 ln -s ~/Documents/skills/skills/harness-coding-agents ~/.claude/skills/harness-coding-agents
 ln -s ~/Documents/skills/skills/deep-research         ~/.claude/skills/deep-research
 ln -s ~/Documents/skills/skills/arrow-diagram         ~/.claude/skills/arrow-diagram
+ln -s ~/Documents/skills/skills/colab-harness         ~/.claude/skills/colab-harness
 ```
 
 Swap `~/.claude/skills` for `~/.codex/skills` (Codex) or `~/.agents/skills`
@@ -59,6 +61,7 @@ Swap `~/.claude/skills` for `~/.codex/skills` (Codex) or `~/.agents/skills`
   see what is ready. Claude Code requires v2.1.269+ and a saved subscription
   sign-in via `claude auth login`.
 - **arrow-diagram**: Node 18+, nothing else.
+- **colab-harness**: Node 18+ locally, a Colab Pro account with a GPU runtime. Nothing else installed here.
 - **deep-research**: Node 18+, system Google Chrome, `npm install` inside the
   skill folder, and a one-time cookie export from a browser logged in to
   chatgpt.com and/or grok.com. Onboarding steps, including the rules for an
