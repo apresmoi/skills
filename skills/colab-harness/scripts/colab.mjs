@@ -6,6 +6,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { execFileSync } from "node:child_process";
 
 const HOME = path.join(process.env.COLAB_HARNESS_HOME ?? path.join(homedir(), ".colab-harness"));
 const TOKEN_FILE = path.join(HOME, "token");
@@ -39,6 +40,12 @@ const USAGE = `colab-harness — use a Colab GPU runtime from here.
                                              upload and run a script on the VM (train, DSPy compile, ...);
                                              --push uploads a folder to a PRIVATE Hugging Face repo when it succeeds
   node colab.mjs hf                          Hugging Face token on the VM: user, role, can it push
+  --name N --description "..." --tags a,b    with script: catalog the trained model (name defaults to the push repo)
+  node colab.mjs models [list] [--owner X] [--base X] [--json]   the catalog of trained models (~/.colab-harness/catalog.json)
+  node colab.mjs models search <query>       substring match over name, description, tags, base, dataset, owner, args
+  node colab.mjs models show <name>          full entry
+  node colab.mjs models edit <name> [--description "..."] [--tags a,b] [--name new]
+  node colab.mjs models sync                 add hub repos tagged colab-harness that the catalog lacks (needs a local HF login)
   node colab.mjs keep [--minutes 120] [--dry-run]   extend the lease; prints the compute-unit cost of that time
   node colab.mjs cost                        this month's sessions, units, % of the monthly allowance, balance if seeded
   node colab.mjs budget set --monthly 100 --available <n>   seed the allowance and the balance from Colab's Resources panel
@@ -64,7 +71,7 @@ const parse = (argv) => {
   const pos = [], opt = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith("--")) { const n = argv[i + 1]; if (["args", "vllm-args"].includes(a.slice(2)) && n !== undefined) { opt[a.slice(2)] = n; i++; continue; } if (["follow", "no-open", "all", "no-cookies", "fetch-audio", "word-timestamps", "force", "dry-run", "public"].includes(a.slice(2)) || n === undefined || n.startsWith("--")) opt[a.slice(2)] = true; else { opt[a.slice(2)] = n; i++; } }
+    if (a.startsWith("--")) { const n = argv[i + 1]; if (["args", "vllm-args"].includes(a.slice(2)) && n !== undefined) { opt[a.slice(2)] = n; i++; continue; } if (["follow", "no-open", "all", "no-cookies", "fetch-audio", "word-timestamps", "force", "dry-run", "public", "json"].includes(a.slice(2)) || n === undefined || n.startsWith("--")) opt[a.slice(2)] = true; else { opt[a.slice(2)] = n; i++; } }
     else pos.push(a);
   }
   return { pos, opt };
@@ -76,6 +83,31 @@ const parse = (argv) => {
 const DEFAULT_RATES = { "NVIDIA L4": { rate: 1.54, measured: true }, "Tesla T4": { rate: 1.44, measured: false }, "NVIDIA A100-SXM4-40GB": { rate: 8.47, measured: false }, "NVIDIA A100-SXM4-80GB": { rate: 11.77, measured: false } };
 const BUDGET_FILE = path.join(HOME, "budget.json");
 const LEDGER_FILE = path.join(HOME, "ledger.json");
+const CATALOG_FILE = path.join(HOME, "catalog.json");   // trained models: name, description, owner project, hub repo, metrics
+
+const git = (args, cwd) => { try { return execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); } catch { return null; } };
+
+// The project a model was trained from: where you ran the command, its git root, remote, branch, commit.
+const ownerInfo = (cwd = process.cwd()) => {
+  const root = git(["rev-parse", "--show-toplevel"], cwd);
+  const o = { cwd };
+  if (root) { o.git_root = root; o.remote = git(["remote", "get-url", "origin"], cwd); o.branch = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd); o.commit = git(["rev-parse", "--short", "HEAD"], cwd); if (git(["status", "--porcelain"], cwd)) o.dirty = true; }
+  return o;
+};
+const loadCatalog = async () => loadJson(CATALOG_FILE, []);
+const saveCatalog = async (c) => saveJson(CATALOG_FILE, c);
+const catalogUpsert = async (entry) => { const c = await loadCatalog(); const i = c.findIndex((e) => e.name === entry.name); if (i >= 0) c[i] = { ...c[i], ...entry }; else c.push(entry); await saveCatalog(c); return entry; };
+const ownerLabel = (o = {}) => (o.remote ? o.remote.replace(/^git@github\.com:/, "github:").replace(/^https:\/\/github\.com\//, "github:").replace(/\.git$/, "") : (o.git_root ?? o.cwd ?? "-"));
+const entryText = (e) => JSON.stringify([e.name, e.description, e.tags, e.train?.base, e.train?.dataset, e.hub?.repo, e.owner?.remote, e.owner?.git_root, e.owner?.cwd, e.job?.script, e.job?.args]).toLowerCase();
+const parseSummary = (stdoutTail = "") => { const m = stdoutTail.match(/^SUMMARY (\{.*\})$/m); if (!m) return null; try { return JSON.parse(m[1]); } catch { return null; } };
+const printCatalog = (rows) => {
+  if (!rows.length) { console.log("no models catalogued (train with: script <file> --push <repo> --description \"...\")"); return; }
+  const cols = [["name", (e) => e.name], ["base", (e) => e.train?.base ?? "-"], ["dataset", (e) => e.train?.dataset ?? "-"], ["steps", (e) => e.train?.steps ?? "-"], ["loss", (e) => e.train?.last_loss != null ? Number(e.train.last_loss).toFixed(3) : "-"], ["owner", (e) => ownerLabel(e.owner)], ["date", (e) => (e.created_at ?? "").slice(0, 10)], ["hub", (e) => e.hub?.url ?? (e.local ?? "-")]];
+  const w = cols.map(([h, f]) => Math.max(h.length, ...rows.map((e) => String(f(e)).length)));
+  console.log(cols.map(([h], i) => h.padEnd(w[i])).join("  "));
+  for (const e of rows) console.log(cols.map(([, f], i) => String(f(e)).padEnd(w[i])).join("  "));
+  for (const e of rows) if (e.description) console.log(`  ${e.name}: ${e.description}`);
+};
 const loadJson = async (f, fallback) => { try { return JSON.parse(await readFile(f, "utf8")); } catch { return fallback; } };
 const saveJson = async (f, v) => { await mkdir(HOME, { recursive: true, mode: 0o700 }); await writeFile(f, JSON.stringify(v, null, 2) + "\n", { mode: 0o600 }); };
 const loadBudget = async () => ({ monthly: 100, available: null, as_of: null, rates: {}, ...(await loadJson(BUDGET_FILE, {})) });
@@ -313,6 +345,54 @@ const main = async () => {
     return;
   }
 
+  if (cmd === "models") {
+    const [sub = "list", ...q] = rest;
+    let c = await loadCatalog();
+    if (sub === "list") {
+      if (opt.owner) c = c.filter((e) => ownerLabel(e.owner).toLowerCase().includes(String(opt.owner).toLowerCase()));
+      if (opt.base) c = c.filter((e) => (e.train?.base ?? "").toLowerCase().includes(String(opt.base).toLowerCase()));
+      if (opt.json) { console.log(JSON.stringify(c, null, 2)); return; }
+      printCatalog(c.sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""))); return;
+    }
+    if (sub === "search") {
+      const needle = q.join(" ").toLowerCase(); if (!needle) die("usage: models search <query>");
+      const hits = c.filter((e) => entryText(e).includes(needle));
+      if (opt.json) { console.log(JSON.stringify(hits, null, 2)); return; }
+      printCatalog(hits); return;
+    }
+    if (sub === "show") { const e = c.find((x) => x.name === q[0]); if (!e) die(`no model named ${q[0]}`); console.log(JSON.stringify(e, null, 2)); return; }
+    if (sub === "edit") {
+      const e = c.find((x) => x.name === q[0]); if (!e) die(`no model named ${q[0]}`);
+      if (opt.description) e.description = opt.description;
+      if (opt.tags) e.tags = String(opt.tags).split(",").map((t) => t.trim()).filter(Boolean);
+      if (opt.name) e.name = opt.name;
+      e.updated_at = new Date().toISOString(); await saveCatalog(c); console.log(JSON.stringify(e, null, 2)); return;
+    }
+    if (sub === "sync") {
+      // Rebuild from the hub: every model repo of yours tagged colab-harness, reading its colab-harness.json.
+      let tok = process.env.HF_TOKEN; if (!tok) { try { tok = (await readFile(path.join(homedir(), ".cache/huggingface/token"), "utf8")).trim(); } catch { die("no local Hugging Face login: run `hf auth login` (or set HF_TOKEN)"); } }
+      const hdr = { authorization: `Bearer ${tok}` };
+      const who = await fetch("https://huggingface.co/api/whoami-v2", { headers: hdr }).then((r) => r.json());
+      if (!who.name) die("Hugging Face token rejected");
+      const repos = await fetch(`https://huggingface.co/api/models?author=${who.name}&filter=colab-harness&limit=500`, { headers: hdr }).then((r) => r.json());
+      let added = 0;
+      for (const r of repos) {
+        const card = await fetch(`https://huggingface.co/${r.id}/resolve/main/colab-harness.json`, { headers: hdr }).then((x) => (x.ok ? x.json() : null)).catch(() => null);
+        const name = card?.name ?? r.id.split("/").pop();
+        if (c.some((e) => e.name === name || e.hub?.repo === r.id)) continue;
+        const sm = card?.summary;
+        c.push({ name, description: card?.description ?? null, tags: card?.tags ?? [], created_at: card?.pushed_at ?? r.createdAt ?? new Date().toISOString(), owner: card?.owner ?? null,
+          hub: { repo: r.id, url: `https://huggingface.co/${r.id}`, private: r.private }, local: null, job: card ? { id: card.job, script: card.script, args: card.args } : null,
+          train: sm ? { base: sm.model, dataset: sm.dataset, samples: sm.samples, steps: sm.steps, first_loss: sm.first_loss, last_loss: sm.last_loss, train_seconds: sm.train_seconds } : null, synced_from_hub: true });
+        added++;
+      }
+      await saveCatalog(c);
+      console.log(`hub: ${repos.length} repos tagged colab-harness for ${who.name}; added ${added} to the catalog (${c.length} total)`);
+      return;
+    }
+    die("usage: models [list|search <q>|show <name>|edit <name>|sync]");
+  }
+
   const session = await loadSession();
 
   if (cmd === "status") {
@@ -496,11 +576,15 @@ const main = async () => {
     const params = { upload_id: uploadId, args: opt.args ? opt.args.split(/\s+/) : [], timeout: Number(opt.timeout ?? 21600) };
     if (opt.env) params.env = Object.fromEntries(opt.env.split(",").map((kv) => kv.split(/=(.*)/s).slice(0, 2)));
     if (opt.python) params.python = opt.python;
+    const owner = ownerInfo();
+    const catalogMeta = { name: opt.name ?? (opt.push ? String(opt.push).split("/").pop() : null), description: opt.description ?? null,
+      tags: opt.tags ? String(opt.tags).split(",").map((t) => t.trim()).filter(Boolean) : [], owner, script: path.basename(file), args: params.args };
     if (opt.push) {
       const hf = await requireHfWrite(session);
       params.push = String(opt.push).includes("/") ? opt.push : `${hf.user}/${opt.push}`;
       params.push_dir = opt["push-dir"] ?? "adapter";
       if (opt.public) params.public = true;
+      params.catalog = catalogMeta;
       console.error(`will push ${params.push_dir}/ to https://huggingface.co/${params.push} (${params.public ? "PUBLIC" : "private"}) when the script succeeds`);
     }
     const job = await submit(session, "script", params);
@@ -514,8 +598,20 @@ const main = async () => {
       const pu = done.result.push;
       console.error(`pushed ${pu.files} files (${(pu.bytes / 1e6).toFixed(1)} MB) → ${pu.url} [${pu.private ? "private" : "PUBLIC"}]`);
     }
+    const summary = parseSummary(done.result.stdout_tail);
+    const hasArtefact = done.result.push || (done.files ?? []).some((f) => /^adapter\//.test(f.name ?? f));
+    if (catalogMeta.name || hasArtefact) {
+      const name = catalogMeta.name ?? `${path.basename(file, path.extname(file))}-${job.id}`;
+      const entry = { name, description: catalogMeta.description, tags: catalogMeta.tags, created_at: new Date().toISOString(), owner,
+        hub: done.result.push ? { repo: done.result.push.repo, url: done.result.push.url, private: done.result.push.private, commit: done.result.push.commit, files: done.result.push.files, bytes: done.result.push.bytes } : null,
+        local: path.resolve(outDir), job: { id: job.id, session: SESSION_NAME, script: path.basename(file), args: params.args, gpu: (await api(session, "GET", "/health").catch(() => ({}))).gpu?.name ?? null },
+        train: summary ? { base: summary.model, dataset: summary.dataset, samples: summary.samples, steps: summary.steps, first_loss: summary.first_loss, last_loss: summary.last_loss, train_seconds: summary.train_seconds } : null };
+      await catalogUpsert(entry);
+      console.error(`catalogued "${name}" (${CATALOG_FILE})${entry.description ? "" : " — add a description: node colab.mjs models edit " + name + " --description \"...\""}`);
+    }
     return;
   }
+
 
   if (cmd === "hf") {
     console.log(hfLine(await api(session, "GET", "/health")));

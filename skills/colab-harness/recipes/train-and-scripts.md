@@ -54,6 +54,40 @@ Only the adapter goes up: rank 16 on all linear layers is about 18 MB for
 a 0.5B base, 85 MB for an 8B, 130 MB for a 12B. The base model is
 re-downloaded wherever the adapter is used.
 
+## The catalog: remembering what you trained
+
+Every `script` job that pushes, or that writes an `adapter/` folder, adds an
+entry to `~/.colab-harness/catalog.json`. Give it a name and a description at
+submit time; the owner project is detected from where you run the command:
+
+```bash
+cd ~/code/glyphbench
+node colab.mjs script examples/train_lora.py --args "..." \
+  --push glyph-router --description "routes glyph prompts to solvers, v1" --tags glyphbench,router
+```
+
+An entry records: `name`, `description`, `tags`, `owner` (cwd, git root,
+`origin` remote, branch, commit, dirty flag), `hub` (repo, URL, private,
+commit, size), `local` (where the files were fetched), `job` (id, session,
+script, args, GPU) and `train` (base model, dataset, samples, steps, first
+and last loss, seconds), parsed from the trainer's `SUMMARY` line.
+
+```bash
+node colab.mjs models                       # table, newest first, descriptions underneath
+node colab.mjs models search glyph          # over name, description, tags, base, dataset, owner, args
+node colab.mjs models list --owner glyphbench --base qwen [--json]
+node colab.mjs models show glyph-router     # the full entry
+node colab.mjs models edit glyph-router --description "..." --tags a,b
+node colab.mjs models sync                  # rebuild from the hub after losing the laptop
+```
+
+The same metadata rides with the artefact: the push adds a `colab-harness`
+tag to the model card, a `## colab-harness` section with the owner project,
+the job and the training numbers, and a `colab-harness.json` file. `models
+sync` lists your hub repos carrying that tag and fills any entry the local
+catalog lacks, so the hub is the durable copy and the laptop file is the
+fast one. `sync` needs a local login (`hf auth login`, or `HF_TOKEN`).
+
 ### Using it elsewhere (laptop, another GPU box, a later Colab)
 
 ```bash

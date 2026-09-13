@@ -101,7 +101,7 @@ def hf_info() -> dict:
     return _hf_cache
 
 
-def hf_push(job: dict, repo: str, subdir: str, private: bool) -> dict:
+def hf_push(job: dict, repo: str, subdir: str, private: bool, meta: Optional[dict] = None) -> dict:
     # Upload one folder of the job dir to a Hugging Face model repo. Private unless
     # the caller explicitly asked for public. Adds a README with the base model when
     # the folder has none, so the hub page shows the lineage.
@@ -131,6 +131,37 @@ def hf_push(job: dict, repo: str, subdir: str, private: bool) -> dict:
         fm.append("---")
         body = f"\n# {repo.split('/')[-1]}\n\nProduced by colab-harness job `{job['id']}`" + (f" on base `{base}`" if base else "") + ".\n"
         readme.write_text("\n".join(fm) + body)
+    # Catalog metadata travels with the artefact: a JSON file the CLI can rebuild
+    # its catalog from, plus a README section and tag so the hub itself is searchable.
+    summary = None
+    tl = Path(job["dir"]) / "train_log.json"
+    if tl.exists():
+        try:
+            summary = json.loads(tl.read_text()).get("summary")
+        except Exception:
+            summary = None
+    card = {"schema": "colab-harness/1", "job": job["id"], "pushed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "repo": repo, "private": private, "summary": summary, **(meta or {})}
+    (folder / "colab-harness.json").write_text(json.dumps(card, indent=2) + "\n")
+    text = readme.read_text()
+    if text.startswith("---"):
+        head, _, rest = text[3:].partition("---")
+        if "colab-harness" not in head:
+            head = head.replace("tags:\n", "tags:\n- colab-harness\n", 1) if "tags:\n" in head else head.rstrip("\n") + "\ntags:\n- colab-harness\n"
+        text = "---" + head + "---" + rest
+    if "## colab-harness" not in text:
+        owner = (meta or {}).get("owner") or {}
+        lines = ["", "## colab-harness", "", f"- **name:** {(meta or {}).get('name') or repo.split('/')[-1]}",
+                 f"- **description:** {(meta or {}).get('description') or '-'}",
+                 f"- **owner project:** {owner.get('remote') or owner.get('git_root') or owner.get('cwd') or '-'}" + (f" @ {owner['branch']} {owner['commit']}" if owner.get("commit") else ""),
+                 f"- **job:** {job['id']} · {(meta or {}).get('script') or ''} {' '.join((meta or {}).get('args') or [])}".rstrip()]
+        if summary:
+            lines.append(f"- **train:** base {summary.get('model')} · dataset {summary.get('dataset')} · {summary.get('samples')} samples · {summary.get('steps')} steps · loss {summary.get('first_loss')} → {summary.get('last_loss')}")
+        if (meta or {}).get("tags"):
+            lines.append(f"- **tags:** {', '.join(meta['tags'])}")
+        lines.append("- full metadata in `colab-harness.json`")
+        text = text.rstrip("\n") + "\n" + "\n".join(lines) + "\n"
+    readme.write_text(text)
     api = HfApi(token=os.environ["HF_TOKEN"])
     api.create_repo(repo, private=private, exist_ok=True, repo_type="model")
     # Never let an existing public repo receive a push that was asked to be private.
@@ -555,7 +586,7 @@ def run_script(job: dict) -> dict:
         raise RuntimeError(f"exit {proc.returncode}: {tail('stderr.txt').strip()[-500:]}")
     result = {"exit_code": proc.returncode, "stdout_tail": tail("stdout.txt"), "stderr_tail": tail("stderr.txt")}
     if p.get("push"):
-        result["push"] = hf_push(job, str(p["push"]), str(p.get("push_dir") or "adapter"), private=not bool(p.get("public")))
+        result["push"] = hf_push(job, str(p["push"]), str(p.get("push_dir") or "adapter"), private=not bool(p.get("public")), meta=p.get("catalog"))
     return result
 
 

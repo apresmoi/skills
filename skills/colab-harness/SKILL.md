@@ -27,7 +27,7 @@ flags. Each task below has one recipe; read only the one you need.
 | Start a session, connect, keep it alive, release it, run several | `recipes/session.md` |
 | Transcribe, diarize, download from YouTube, the one-command pipeline | `recipes/transcribe-diarize.md` |
 | Serve a model with vLLM and use it from any OpenAI client | `recipes/vllm.md` |
-| Run a script on the VM: LoRA training, DSPy compile, anything; keep the result with `--push` (private HF repo) | `recipes/train-and-scripts.md` |
+| Run a script on the VM: LoRA training, DSPy compile, anything; keep the result with `--push` (private HF repo); the catalog of trained models (`models list/search/show`) | `recipes/train-and-scripts.md` |
 
 ## Hard rules for an agent
 
