@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Named research exercises: a recipe with the blanks filled for one recurring
-// question, kept outside the repo so it survives skill updates and stays private.
-//   ~/.deep-research/exercises/<name>.md          the exercise (frontmatter + sections)
-//   ~/.deep-research/exercises/<name>/runs/<ts>/  one dir per run: intake.md, run.json
+// Personal research recipes: a built-in recipe with the blanks filled for one
+// recurring question, kept outside the repo so they survive skill updates and
+// stay private.
+//   ~/.deep-research/recipes/<name>.md          the recipe (frontmatter + sections)
+//   ~/.deep-research/recipes/<name>/runs/<ts>/  one dir per run: intake.md, run.json
 import { mkdir, readdir, readFile, stat, writeFile, copyFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -10,29 +11,32 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const HOME = process.env.DEEP_RESEARCH_HOME ?? path.join(homedir(), ".deep-research");
-const EX = path.join(HOME, "exercises");
+const EX = path.join(HOME, "recipes");
 const RECIPES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "recipes", "research");
 const SENTINEL = "=== REPORT COMPLETE ===";
 
-const USAGE = `deep-research exercises
+const USAGE = `deep-research recipes
 
-  node exercise.mjs list                                  exercises and their run counts
-  node exercise.mjs recipes                               built-in recipes to start from
-  node exercise.mjs new <name> --from <recipe> | --blank  scaffold ~/.deep-research/exercises/<name>.md
-  node exercise.mjs show <name>                           print the exercise
-  node exercise.mjs render <name> --set k=v [--set k=v]   fill slots → runs/<ts>/intake.md (prints its path)
-  node exercise.mjs runs <name>                           list runs with version and verdict
-  node exercise.mjs log <name> --run <ts> --verdict "..." record how a run went
+  node recipe.mjs list                                  your recipes and their run counts
+  node recipe.mjs builtin                               built-in recipes to start from
+  node recipe.mjs new <name> --from <builtin> | --blank scaffold ~/.deep-research/recipes/<name>.md
+  node recipe.mjs convert <name> --intake <file> --slot k="literal" [...]
+                                                        turn an ad-hoc research prompt into a recipe: each
+                                                        --slot replaces that literal in the prompt with {k}
+  node recipe.mjs show <name>                           print the recipe
+  node recipe.mjs render <name> --set k=v [--set k=v]   fill slots → runs/<ts>/intake.md (prints its path)
+  node recipe.mjs runs <name>                           list runs with version and verdict
+  node recipe.mjs log <name> --run <ts> --verdict "..." record how a run went
 
-Exercise file: frontmatter (name, site, mode, slots, version), then
+Recipe file: frontmatter (name, site, mode, slots, version), then
 ## Brief (with {slot} placeholders), ## Output contract, ## Verify, ## Changelog.
 Tune by editing the brief, bumping version, and adding a changelog line.`;
 
-const die = (m, c = 2) => { console.error(`exercise: ${m}`); process.exit(c); };
-const parse = (argv) => { const pos = [], opt = {}, sets = {}; for (let i = 0; i < argv.length; i++) { const a = argv[i]; if (a === "--set") { const [k, ...v] = argv[++i].split("="); sets[k] = v.join("="); } else if (a.startsWith("--")) { const n = argv[i + 1]; if (n === undefined || n.startsWith("--")) opt[a.slice(2)] = true; else opt[a.slice(2)] = argv[++i]; } else pos.push(a); } return { pos, opt, sets }; };
+const die = (m, c = 2) => { console.error(`recipe: ${m}`); process.exit(c); };
+const parse = (argv) => { const pos = [], opt = {}, sets = {}, slots = {}; for (let i = 0; i < argv.length; i++) { const a = argv[i]; if (a === "--set" || a === "--slot") { const [k, ...v] = argv[++i].split("="); (a === "--set" ? sets : slots)[k] = v.join("="); } else if (a.startsWith("--")) { const n = argv[i + 1]; if (n === undefined || n.startsWith("--")) opt[a.slice(2)] = true; else opt[a.slice(2)] = argv[++i]; } else pos.push(a); } return { pos, opt, sets, slots }; };
 const slug = (s) => /^[a-z0-9][a-z0-9-]{0,60}$/.test(s) ? s : die(`name must be lowercase letters, digits, dashes: ${s}`);
 
-export const parseExercise = (text) => {
+export const parseRecipe = (text) => {
   const m = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(text);
   if (!m) throw new Error("missing frontmatter");
   const fm = {};
@@ -63,41 +67,68 @@ export const renderIntake = (ex, sets, name) => {
 
 const exPath = (name) => path.join(EX, `${name}.md`);
 const runsDir = (name) => path.join(EX, name, "runs");
-const loadEx = async (name) => { try { return parseExercise(await readFile(exPath(name), "utf8")); } catch (e) { die(`cannot load exercise "${name}": ${e.message}`); } };
+const loadEx = async (name) => { try { return parseRecipe(await readFile(exPath(name), "utf8")); } catch (e) { die(`cannot load recipe "${name}": ${e.message}`); } };
 
 const main = async () => {
-  const { pos, opt, sets } = parse(process.argv.slice(2));
+  const { pos, opt, sets, slots } = parse(process.argv.slice(2));
   const [cmd, name] = pos;
   if (!cmd || cmd === "--help" || cmd === "-h") { console.log(USAGE); return; }
 
-  if (cmd === "recipes") {
+  if (cmd === "builtin" || cmd === "recipes") {
     for (const f of (await readdir(RECIPES)).filter((f) => f.endsWith(".md") && f !== "README.md").sort()) {
-      const ex = parseExercise(await readFile(path.join(RECIPES, f), "utf8"));
+      const ex = parseRecipe(await readFile(path.join(RECIPES, f), "utf8"));
       console.log(`${f.slice(0, -3).padEnd(20)} ${ex.site}/${ex.mode}  slots: ${ex.slots.join(", ")}`);
     }
     return;
   }
   if (cmd === "list") {
     let names = []; try { names = (await readdir(EX)).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3)).sort(); } catch { /* none */ }
-    if (!names.length) { console.log(`no exercises in ${EX}`); return; }
+    if (!names.length) { console.log(`no recipes in ${EX}`); return; }
     for (const n of names) { const ex = await loadEx(n); let runs = 0; try { runs = (await readdir(runsDir(n))).length; } catch { /* none */ } console.log(`${n.padEnd(24)} v${ex.version}  ${ex.site}/${ex.mode}  slots: ${ex.slots.join(", ") || "-"}  runs: ${runs}`); }
     return;
   }
   if (cmd === "new") {
-    slug(name ?? die("usage: new <name> --from <recipe> | --blank"));
+    slug(name ?? die("usage: new <name> --from <builtin> | --blank"));
     await mkdir(EX, { recursive: true, mode: 0o700 });
-    try { await stat(exPath(name)); die(`exercise "${name}" already exists at ${exPath(name)}`); } catch (e) { if (e.code !== "ENOENT") throw e; }
+    try { await stat(exPath(name)); die(`recipe "${name}" already exists at ${exPath(name)}`); } catch (e) { if (e.code !== "ENOENT") throw e; }
     let body;
     if (opt.from) {
       const src = path.join(RECIPES, `${opt.from}.md`);
-      try { body = await readFile(src, "utf8"); } catch { die(`no built-in recipe "${opt.from}" (see: recipes)`); }
+      try { body = await readFile(src, "utf8"); } catch { die(`no built-in recipe "${opt.from}" (see: builtin)`); }
       body = body.replace(/^name: .*$/m, `name: ${name}`).replace(/^---\n([\s\S]*?)\n---/, (m0, fm) => `---\n${fm}\nversion: 1\n---`);
     } else if (opt.blank) {
       body = `---\nname: ${name}\nsite: grok\nmode: Expert\nslots: subject, window\nversion: 1\n---\n## Brief\n\nResearch {subject} over {window}.\n\n1. ...\n\n## Output contract\n\n- \`### Findings\`: ...\nEnd with \`${SENTINEL}\`.\n\n## Verify\n\n- ...\n`;
-    } else die("choose --from <recipe> or --blank");
-    body = body.trimEnd() + `\n\n## Changelog\n\n- v1 (${new Date().toISOString().slice(0, 10)}): created${opt.from ? ` from recipe ${opt.from}` : ""}\n`;
+    } else die("choose --from <builtin> or --blank");
+    body = body.trimEnd() + `\n\n## Changelog\n\n- v1 (${new Date().toISOString().slice(0, 10)}): created${opt.from ? ` from built-in ${opt.from}` : ""}\n`;
     await writeFile(exPath(name), body, { mode: 0o600 });
-    console.log(`created ${exPath(name)}\nedit the brief, then: node exercise.mjs render ${name} --set ...`);
+    console.log(`created ${exPath(name)}\nedit the brief, then: node recipe.mjs render ${name} --set ...`);
+    return;
+  }
+  if (cmd === "convert") {
+    // An ad-hoc research run that worked becomes a recipe: the intake's prompt is
+    // the brief, each --slot k="literal" turns that literal into {k}, and the
+    // intake itself is kept as run 1 (the evidence for version 1).
+    slug(name ?? die('usage: convert <name> --intake <file> --slot k="literal" [--site grok] [--mode Expert]'));
+    if (!opt.intake) die("--intake <file> required");
+    let text; try { text = await readFile(String(opt.intake), "utf8"); } catch { die(`cannot read ${opt.intake}`); }
+    const fence = /```[a-z]*\n([\s\S]*?)```/.exec(text);
+    if (!fence) die("no fenced prompt block in the intake");
+    let brief = fence[1].trim().replace(/\n*End with the literal line === REPORT COMPLETE ===\s*$/, "").trim();
+    const names = Object.keys(slots);
+    for (const [k, literal] of Object.entries(slots)) {
+      if (!brief.includes(literal)) die(`--slot ${k}: literal "${literal}" not found in the prompt`);
+      brief = brief.split(literal).join(`{${k}}`);
+    }
+    await mkdir(EX, { recursive: true, mode: 0o700 });
+    try { await stat(exPath(name)); die(`recipe "${name}" already exists`); } catch (e) { if (e.code !== "ENOENT") throw e; }
+    const site = String(opt.site ?? (/\[grok/.test(text) ? "grok" : "chatgpt")), mode = String(opt.mode ?? (site === "grok" ? "Expert" : "Extra High"));
+    const body = `---\nname: ${name}\nsite: ${site}\nmode: ${mode}\nslots: ${names.join(", ")}\nversion: 1\n---\n## Brief\n\n${brief}\n\n## Output contract\n\n- (describe the shape the reply must follow; the sentinel is added automatically)\nEnd with \`${SENTINEL}\`.\n\n## Verify\n\n- (which URLs or facts to check before trusting the reply)\n\n## Changelog\n\n- v1 (${new Date().toISOString().slice(0, 10)}): converted from ${path.basename(String(opt.intake))}; slots ${names.join(", ") || "none"}\n`;
+    await writeFile(exPath(name), body, { mode: 0o600 });
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const dir = path.join(runsDir(name), ts); await mkdir(dir, { recursive: true });
+    await copyFile(String(opt.intake), path.join(dir, "intake.md"));
+    await writeFile(path.join(dir, "run.json"), JSON.stringify({ recipe: name, version: 1, site, mode, slots, rendered_at: new Date().toISOString(), verdict: "source run for v1 (converted)", converted_from: String(opt.intake) }, null, 2) + "\n");
+    console.log(`created ${exPath(name)} (slots: ${names.join(", ") || "none"}); original run kept as ${dir}\nfill in ## Output contract and ## Verify, then: node recipe.mjs render ${name} --set ...`);
     return;
   }
   if (cmd === "show") { if (!name) die("usage: show <name>"); process.stdout.write(await readFile(exPath(name), "utf8")); return; }
@@ -109,7 +140,7 @@ const main = async () => {
     const dir = path.join(runsDir(name), ts);
     await mkdir(dir, { recursive: true });
     await writeFile(path.join(dir, "intake.md"), intake);
-    await writeFile(path.join(dir, "run.json"), JSON.stringify({ exercise: name, version: ex.version, site: ex.site, mode: ex.mode, slots: sets, rendered_at: new Date().toISOString(), verdict: null }, null, 2) + "\n");
+    await writeFile(path.join(dir, "run.json"), JSON.stringify({ recipe: name, version: ex.version, site: ex.site, mode: ex.mode, slots: sets, rendered_at: new Date().toISOString(), verdict: null }, null, 2) + "\n");
     console.log(path.join(dir, "intake.md"));
     console.error(`run with: node run.mjs --site ${ex.site} --model "${ex.mode}" --intake "${path.join(dir, "intake.md")}"`);
     return;

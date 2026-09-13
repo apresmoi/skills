@@ -3,8 +3,8 @@
 The agent uses its `mcp__claude-in-chrome__*` tools against the user's real,
 logged-in Chrome, so no cookies, profiles, or anti-detection are involved.
 
-1. Read the intake file; the prompt is its first fenced block. For a named
-   exercise, `render` it first (see SKILL.md) and use the produced intake.
+1. Read the intake file; the prompt is its first fenced block. For one of the
+   user's recipes, `render` it first (see SKILL.md) and use the produced intake.
 2. Open a new tab at `https://chatgpt.com/` or `https://grok.com/`. Find the
    `Deep research` project in the sidebar; if absent, create it (ChatGPT:
    sidebar "New project", name, Create project. Grok: sidebar "Add project",
@@ -23,7 +23,7 @@ logged-in Chrome, so no cookies, profiles, or anti-detection are involved.
    clarifying question: surface it to the user.
 6. Copy the final message and its cited links under the intake's
    `## Output`, tagged `[site · model]`, exactly as the runner does. For a
-   named exercise, add the `log` line with a verdict.
+   user recipe, add the `log` line with a verdict.
 7. Leave the tab open so the user can read the original.
 
 The reply is raw intake; apply the recipe's verify step before trusting it.

@@ -33,7 +33,7 @@ Open the site, export **for the current site only**. One file per site.
 │   └── grok.com_cookies.txt
 ├── profiles/{chatgpt,grok}/          created on first run
 ├── projects.json                     remembered project URLs, not secret
-└── exercises/<name>.md + runs/       named exercises and their history
+└── recipes/<name>.md + runs/         your recipes and their run history
 ```
 
 ```bash

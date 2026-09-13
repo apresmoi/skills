@@ -5,15 +5,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { parseExercise, renderIntake } from "./exercise.mjs";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+import { parseRecipe, renderIntake } from "./recipe.mjs";
 
-const cli = fileURLToPath(new URL("./exercise.mjs", import.meta.url));
+const cli = fileURLToPath(new URL("./recipe.mjs", import.meta.url));
 const run = (home, ...args) => spawnSync(process.execPath, [cli, ...args], { encoding: "utf8", env: { ...process.env, DEEP_RESEARCH_HOME: home } });
 
 test("built-in recipes parse and declare slots, site, mode, and a contract", () => {
   const dir = fileURLToPath(new URL("../recipes/research/", import.meta.url));
   for (const f of ["spread-timeline", "origin-attribution", "narrative-drift", "claim-check", "account-profile"]) {
-    const ex = parseExercise(readFileSync(path.join(dir, `${f}.md`), "utf8"));
+    const ex = parseRecipe(readFileSync(path.join(dir, `${f}.md`), "utf8"));
     assert.ok(ex.slots.length >= 1, f); assert.ok(ex.site && ex.mode, f);
     assert.ok(ex.sections.brief && ex.sections["output contract"] && ex.sections.verify, f);
     assert.match(ex.sections["output contract"], /=== REPORT COMPLETE ===/, f);
@@ -22,7 +24,7 @@ test("built-in recipes parse and declare slots, site, mode, and a contract", () 
 });
 
 test("render fills every slot, refuses missing or unknown ones, and keeps the sentinel", () => {
-  const ex = parseExercise("---\nname: t\nsite: grok\nmode: Expert\nslots: a, b\nversion: 2\n---\n## Brief\n\nLook at {a} during {b}.\n\n## Output contract\n\n- stuff\n\n## Verify\n\n- x\n");
+  const ex = parseRecipe("---\nname: t\nsite: grok\nmode: Expert\nslots: a, b\nversion: 2\n---\n## Brief\n\nLook at {a} during {b}.\n\n## Output contract\n\n- stuff\n\n## Verify\n\n- x\n");
   const out = renderIntake(ex, { a: "X", b: "May" }, "t");
   assert.match(out, /^# t — a: X · b: May \(v2, grok\/Expert\)/);
   assert.match(out, /Look at X during May\./); assert.match(out, /=== REPORT COMPLETE ===/); assert.match(out, /\n## Output\n$/);
@@ -31,11 +33,11 @@ test("render fills every slot, refuses missing or unknown ones, and keeps the se
 });
 
 test("cli: new from recipe, render into a run dir, log a verdict, list and runs", (t) => {
-  const home = mkdtempSync(path.join(tmpdir(), "dr-ex-"));
+  const home = mkdtempSync(path.join(tmpdir(), "dr-rc-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   let r = run(home, "new", "spcx-stocks", "--from", "claim-check");
   assert.equal(r.status, 0, r.stderr);
-  const file = path.join(home, "exercises", "spcx-stocks.md");
+  const file = path.join(home, "recipes", "spcx-stocks.md");
   assert.ok(existsSync(file)); assert.match(readFileSync(file, "utf8"), /^name: spcx-stocks$/m); assert.match(readFileSync(file, "utf8"), /## Changelog/);
   r = run(home, "new", "spcx-stocks", "--from", "claim-check"); assert.equal(r.status, 2); assert.match(r.stderr, /already exists/);
   r = run(home, "new", "Bad Name", "--blank"); assert.equal(r.status, 2);
@@ -45,9 +47,25 @@ test("cli: new from recipe, render into a run dir, log a verdict, list and runs"
   assert.match(r.stderr, /run with: node run\.mjs --site chatgpt --model "Extra High"/);
   const ts = path.basename(path.dirname(intake));
   r = run(home, "log", "spcx-stocks", "--run", ts, "--verdict", "good"); assert.equal(r.status, 0, r.stderr);
-  assert.equal(JSON.parse(readFileSync(path.join(home, "exercises", "spcx-stocks", "runs", ts, "run.json"), "utf8")).verdict, "good");
+  assert.equal(JSON.parse(readFileSync(path.join(home, "recipes", "spcx-stocks", "runs", ts, "run.json"), "utf8")).verdict, "good");
   r = run(home, "list"); assert.match(r.stdout, /spcx-stocks\s+v1\s+chatgpt\/Extra High.*runs: 1/);
   r = run(home, "runs", "spcx-stocks"); assert.match(r.stdout, /claim=SPCX will beat guidance.*good/);
   r = run(home, "render", "spcx-stocks", "--set", "claim=x"); assert.equal(r.status, 2); assert.match(r.stderr, /missing --set for: context/);
-  r = run(home, "recipes"); assert.match(r.stdout, /spread-timeline\s+grok\/Expert/);
+  r = run(home, "builtin"); assert.match(r.stdout, /spread-timeline\s+grok\/Expert/);
+});
+
+test("cli: convert an ad-hoc intake into a recipe with slots and keep it as run 1", (t) => {
+  const home = mkdtempSync(path.join(tmpdir(), "dr-rc-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const intake = path.join(home, "ducks.md");
+  require("node:fs").writeFileSync(intake, "# Ducks\n\n```\nTrace how the claim that ducks beat geese spread on X during May 2026.\nEnd with the literal line === REPORT COMPLETE ===\n```\n\n## Output\n\n[grok · Expert]\nreply...\n");
+  let r = run(home, "convert", "duck-spread", "--intake", intake, "--slot", "claim=ducks beat geese", "--slot", "window=May 2026");
+  assert.equal(r.status, 0, r.stderr);
+  const file = readFileSync(path.join(home, "recipes", "duck-spread.md"), "utf8");
+  assert.match(file, /^site: grok$/m); assert.match(file, /^slots: claim, window$/m);
+  assert.match(file, /the claim that \{claim\} spread on X during \{window\}\./); assert.doesNotMatch(file, /REPORT COMPLETE ===\n\n## Output contract/);
+  const runs = require("node:fs").readdirSync(path.join(home, "recipes", "duck-spread", "runs")); assert.equal(runs.length, 1);
+  r = run(home, "render", "duck-spread", "--set", "claim=geese beat ducks", "--set", "window=June 2026"); assert.equal(r.status, 0, r.stderr);
+  assert.match(readFileSync(r.stdout.trim(), "utf8"), /geese beat ducks spread on X during June 2026/);
+  r = run(home, "convert", "x", "--intake", intake, "--slot", "claim=not in there"); assert.equal(r.status, 2); assert.match(r.stderr, /not found in the prompt/);
 });

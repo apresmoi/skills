@@ -2,8 +2,8 @@
 
 Each recipe is a prompt template with `{slots}`, a fixed **output contract**
 so runs are comparable, and a **verify** step, because a deep-research reply
-is a lead generator, not a source. Use them directly, or turn one into a
-named exercise with `node scripts/exercise.mjs new <name> --from <recipe>`.
+is a lead generator, not a source. Use them directly, or make your own from one with
+`node scripts/recipe.mjs new <name> --from <recipe>`.
 
 | Recipe | Question | Best site |
 |---|---|---|
@@ -13,4 +13,4 @@ named exercise with `node scripts/exercise.mjs new <name> --from <recipe>`.
 | `claim-check` | is this specific claim true, triangulated across sources | chatgpt, or grok for X-native claims |
 | `account-profile` | what has this account said about a topic over time | grok |
 
-Frontmatter fields: `site`, `mode`, `slots`. The exercise CLI reads them.
+Frontmatter fields: `site`, `mode`, `slots`. `scripts/recipe.mjs` reads them.

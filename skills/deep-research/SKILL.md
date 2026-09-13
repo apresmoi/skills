@@ -1,6 +1,6 @@
 ---
 name: deep-research
-description: Run any deep-research prompt through a logged-in ChatGPT Pro or Grok (SuperGrok) session in a real Chrome, wait for the report (15–60 min), and capture it into an intake file — plus named research exercises (spread timelines on X, claim checks, origin attribution) that render a tuned prompt on demand. Use when the user asks to run a ChatGPT/Grok deep-research session, fill a research intake, trace how a story spread on X, or run a named research exercise. Drives an already-paid subscription seat instead of spending API tokens.
+description: Run any deep-research prompt through a logged-in ChatGPT Pro or Grok (SuperGrok) session in a real Chrome, wait for the report (15–60 min), and capture it into an intake file — plus research recipes (spread timelines on X, claim checks, origin attribution) and your own named recipes that render a tuned prompt on demand. Use when the user asks to run a ChatGPT/Grok deep-research session, fill a research intake, trace how a story spread on X, or run one of the user's named research recipes. Drives an already-paid subscription seat instead of spending API tokens.
 ---
 
 # deep-research
@@ -25,34 +25,40 @@ Two ways to run it. Both produce the same intake file.
 | Grok specifics: Expert vs Heavy, project, what X search sees | `recipes/grok.md` |
 | Run interactively with no setup | `recipes/claude-in-chrome.md` |
 | Runner internals: anti-detection, done rule, exit codes, probe | `recipes/runner-internals.md` |
-| Research methods, each a prompt template with an output contract | `recipes/research/*.md` |
-| Named exercises: author once, run on demand, tune over versions | below |
+| Built-in research recipes: prompt template, output contract, verify step | `recipes/research/*.md` |
+| Your own recipes: author once, run on demand, tune over versions | below |
 
-## Named exercises
+## Your own recipes
 
-A named exercise is a research recipe with the blanks filled for one
-recurring question: "run the stocks analysis on SPCX". They live in
-`~/.deep-research/exercises/<name>.md`, outside the repo, so they survive
-skill updates and stay private. `scripts/exercise.mjs` manages them:
+A built-in recipe is a method. Your own recipe is that method with the
+blanks filled for one recurring question: "run the SPCX recipe". They live
+in `~/.deep-research/recipes/<name>.md`, outside the repo, so they survive
+skill updates and stay private. `scripts/recipe.mjs` manages them:
 
 ```bash
-node scripts/exercise.mjs list
-node scripts/exercise.mjs new spcx-stocks --from claim-check     # scaffold from a built-in recipe (or --blank)
-node scripts/exercise.mjs show spcx-stocks
-node scripts/exercise.mjs render spcx-stocks --set ticker=SPCX --set window="last 30 days"
-      # → ~/.deep-research/exercises/spcx-stocks/runs/<ts>/intake.md, then run it:
-node run.mjs --site grok --intake <that intake>          # or mode B
-node scripts/exercise.mjs log spcx-stocks --run <ts> --verdict "good: timeline complete; weak: no press pickups"
+node scripts/recipe.mjs builtin                                   # what to start from
+node scripts/recipe.mjs new spcx-stocks --from claim-check        # scaffold, then edit the brief
+node scripts/recipe.mjs convert spcx-stocks --intake research/spcx.md --slot ticker=SPCX --slot window="Q3 2026"
+      # or: turn a research run that worked into a recipe; literals become {slots}, the run is kept as v1's evidence
+node scripts/recipe.mjs render spcx-stocks --set ticker=SPCX --set window="Q4 2026"
+      # → ~/.deep-research/recipes/spcx-stocks/runs/<ts>/intake.md, then run it:
+node run.mjs --site chatgpt --model "Extra High" --intake <that intake>   # or mode B
+node scripts/recipe.mjs log spcx-stocks --run <ts> --verdict "good: ...; weak: ..."
+node scripts/recipe.mjs list · show · runs
 ```
 
-Exercise file: frontmatter (`site`, `mode`, `slots`, `version`), a `## Brief`
+Recipe file: frontmatter (`site`, `mode`, `slots`, `version`), a `## Brief`
 with `{slot}` placeholders, an `## Output contract` the reply must follow, a
 `## Verify` step, and a `## Changelog`. `render` fills the slots, appends the
 contract and the sentinel line, and records which version produced the run.
 
+**Authoring one with the user (agent):** ask three things: what question it
+answers, which parts change run to run (those are the slots), and what shape
+the answer must come back in (the contract). Start from the nearest built-in.
+
 **Tuning loop (agent):** after a run, judge the reply against the output
-contract and the verify step. If it fell short, edit the exercise's brief,
-bump `version`, add a changelog line saying what changed and why, and rerun.
+contract and the verify step. If it fell short, edit the brief, bump
+`version`, add a changelog line saying what changed and why, and rerun.
 Never edit a past run's intake; the runs directory is the history.
 
 ## Hard rules for an agent
