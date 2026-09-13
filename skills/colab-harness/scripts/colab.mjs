@@ -29,6 +29,9 @@ const USAGE = `colab-harness — use a Colab GPU runtime from here.
   node colab.mjs youtube <url> [--cookies PATH] [--no-cookies] [--fetch-audio] [--out DIR]
                                              download audio (mono 16 kHz wav) on the VM; cookies default to
                                              ~/.colab-harness/youtube-cookies.txt when that file exists
+  node colab.mjs cookies install [file]      move a Netscape cookies.txt export into place (default: newest
+                                             *youtube*cookies*.txt in ~/Downloads); prints counts only, never values
+  node colab.mjs cookies status | remove     is a cookie file present, how many cookies, earliest expiry / delete it
   node colab.mjs diarize <audio | --from-job ID> [--speakers N] [--out DIR]   pyannote 3.1 (needs HF_TOKEN secret + accepted terms)
   node colab.mjs pipeline <url|audio> [--language es] [--speakers N] [--out DIR]
                                              youtube (if url) → diarize → transcribe with speakers, one command
@@ -158,6 +161,48 @@ const main = async () => {
   // one-time migration of the pre-sessions layout
   try { await stat(path.join(HOME, "session.json")); await mkdir(SESSIONS_DIR, { recursive: true, mode: 0o700 });
     const { rename } = await import("node:fs/promises"); await rename(path.join(HOME, "session.json"), sessionFile("default")); } catch { /* nothing to migrate */ }
+
+  if (cmd === "cookies") {
+    // Handles the YouTube cookie file without ever printing its contents. The
+    // only things reported are existence, size, cookie count, and expiry dates.
+    const { readdir, rename, unlink } = await import("node:fs/promises");
+    const summarize = async () => {
+      const text = await readFile(YT_COOKIES, "utf8");
+      const rows = text.split("\n").filter((l) => l && !l.startsWith("#")).map((l) => l.split("\t")).filter((f) => f.length >= 7);
+      const yt = rows.filter((f) => /youtube\.com$/.test(f[0].replace(/^\./, "")) || /google\.com$/.test(f[0].replace(/^\./, "")));
+      const expiries = yt.map((f) => Number(f[4])).filter((n) => n > 0);
+      const earliest = expiries.length ? new Date(Math.min(...expiries) * 1000) : null;
+      const st = await stat(YT_COOKIES);
+      return { cookies: rows.length, youtube_or_google: yt.length, earliest_expiry: earliest ? earliest.toISOString().slice(0, 10) : "session-only", bytes: st.size, placed: st.mtime.toISOString().slice(0, 16).replace("T", " ") };
+    };
+    const [sub, fileArg] = rest;
+    if (sub === "status") {
+      try { const s = await summarize(); console.log(`cookie file: present · ${s.youtube_or_google} youtube/google cookies of ${s.cookies} · earliest expiry ${s.earliest_expiry} · placed ${s.placed}`); }
+      catch { console.log(`cookie file: none at ${YT_COOKIES}`); process.exit(1); }
+      return;
+    }
+    if (sub === "remove") { try { await unlink(YT_COOKIES); console.log("cookie file removed"); } catch { console.log("no cookie file to remove"); } return; }
+    if (sub === "install") {
+      let src = fileArg;
+      if (!src) {
+        const dl = path.join(homedir(), "Downloads");
+        const cands = (await readdir(dl)).filter((f) => /cookies?\.txt$/i.test(f) && /youtube|google/i.test(f));
+        const dated = await Promise.all(cands.map(async (f) => ({ f, t: (await stat(path.join(dl, f))).mtimeMs })));
+        dated.sort((a, b) => b.t - a.t);
+        if (!dated.length) die(`no youtube cookies export found in ${dl}; export one (see recipes/setup-youtube-cookies.md) or pass the file path`);
+        src = path.join(dl, dated[0].f);
+      }
+      const head = (await readFile(src, "utf8")).slice(0, 200);
+      if (!/# (Netscape )?HTTP Cookie File|\t/.test(head)) die(`${src} does not look like a Netscape cookies.txt export`);
+      await mkdir(HOME, { recursive: true, mode: 0o700 });
+      await rename(src, YT_COOKIES).catch(async () => { await writeFile(YT_COOKIES, await readFile(src)); await unlink(src); });
+      const { chmod } = await import("node:fs/promises"); await chmod(YT_COOKIES, 0o600);
+      const s = await summarize();
+      console.log(`installed from ${path.basename(src)} → ${YT_COOKIES} (mode 600)\n${s.youtube_or_google} youtube/google cookies · earliest expiry ${s.earliest_expiry}${s.youtube_or_google === 0 ? "\nWARNING: no youtube.com cookies in this file; export while on youtube.com, for the current site" : ""}`);
+      return;
+    }
+    die("usage: cookies install [file] | status | remove");
+  }
 
   if (cmd === "init") {
     const { randomBytes } = await import("node:crypto");
