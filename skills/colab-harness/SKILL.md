@@ -43,6 +43,8 @@ flags. Each task below has one recipe; read only the one you need.
    memory; stop it before training or diarizing, or run them first.
 4. **Verify outputs, not exits.** A job is done when its files are fetched
    and read; `status` and `job <id>` show state, `fetch` brings files back.
+   For progress on running jobs use `progress` (chat-friendly lines with
+   bars), `--follow` (stream one job's log), or `ui` (the VM's dashboard).
 
 ## What runs where
 

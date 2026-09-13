@@ -45,6 +45,9 @@ const USAGE = `colab-harness — use a Colab GPU runtime from here.
   node colab.mjs vllm start <model> [--max-model-len N] [--vllm-args "..."]   start vLLM (installs on first use)
   node colab.mjs vllm status | stop
   node colab.mjs chat "<prompt>" [--model M] one non-streamed completion through the tunnel
+  node colab.mjs progress                    one line per running job across all sessions, with a bar when the log shows n/m or n%
+  node colab.mjs ui [--no-open]              open the tiny dashboard served by the VM (jobs, live logs, lease)
+  --follow                                   with run/script/transcribe/diarize/youtube/pipeline: stream the job's log while waiting
   node colab.mjs env                         print OPENAI_BASE_URL / OPENAI_API_KEY for other clients
   node colab.mjs reload                      push the local harness_server.py to the VM and restart it
 
@@ -56,7 +59,7 @@ const parse = (argv) => {
   const pos = [], opt = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith("--")) { opt[a.slice(2)] = argv[i + 1]; i++; }
+    if (a.startsWith("--")) { const n = argv[i + 1]; if (["follow", "no-open", "all", "no-cookies", "fetch-audio", "word-timestamps", "force"].includes(a.slice(2)) || n === undefined || n.startsWith("--")) opt[a.slice(2)] = true; else { opt[a.slice(2)] = n; i++; } }
     else pos.push(a);
   }
   return { pos, opt };
@@ -82,11 +85,18 @@ const api = async (session, method, route, { json, body, headers = {}, raw = fal
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+let FOLLOW = false;   // --follow: stream the job's stdout/stderr while waiting
 const waitJob = async (session, id, { quiet = false } = {}) => {
-  let last = "";
+  let last = "", off = { o: 0, e: 0 };
   for (;;) {
     const job = await api(session, "GET", `/jobs/${id}`);
     if (!quiet && job.status !== last) { console.error(`[${id}] ${job.status}`); last = job.status; }
+    if (FOLLOW && job.status !== "queued") {
+      const t = await api(session, "GET", `/jobs/${id}/tail?offset_out=${off.o}&offset_err=${off.e}`);
+      off = { o: t.offset_out, e: t.offset_err };
+      if (t.stdout) process.stderr.write(t.stdout);
+      if (t.stderr) process.stderr.write(t.stderr);
+    }
     if (job.status === "done" || job.status === "failed") return job;
     await sleep(3000);
   }
@@ -157,6 +167,7 @@ const main = async () => {
   const [cmd, ...rest] = pos;
   if (!cmd || cmd === "--help" || cmd === "-h") { console.log(USAGE); return; }
   SESSION_NAME = opt.session ?? process.env.COLAB_SESSION ?? "default";
+  FOLLOW = "follow" in opt;
   if (!/^[A-Za-z0-9_-]{1,40}$/.test(SESSION_NAME)) die("--session must be 1-40 chars of letters, digits, - or _");
   // one-time migration of the pre-sessions layout
   try { await stat(path.join(HOME, "session.json")); await mkdir(SESSIONS_DIR, { recursive: true, mode: 0o700 });
@@ -263,6 +274,40 @@ const main = async () => {
   if (cmd === "release") {
     const L = await api(session, "POST", "/shutdown", { json: { stop_vllm: true } });
     console.log("release requested; the notebook's watchdog unassigns the runtime within a minute.", JSON.stringify(L));
+    return;
+  }
+  if (cmd === "progress") {
+    // One line per queued/running job across every saved session, with a bar when
+    // the job's last log line carries "n/m" or "n%". Meant to be printed in chat.
+    const { readdir } = await import("node:fs/promises");
+    let names = []; try { names = (await readdir(SESSIONS_DIR)).filter((f) => f.endsWith(".json")).map((f) => f.slice(0, -5)).sort(); } catch { /* none */ }
+    if (!names.length) { console.log("no sessions"); return; }
+    const bar = (p) => { const n = Math.round(p / 5); return `[${"#".repeat(n)}${"-".repeat(20 - n)}] ${Math.round(p)}%`; };
+    let any = false;
+    for (const name of names) {
+      const s = JSON.parse(await readFile(sessionFile(name), "utf8"));
+      const res = await fetch(s.url + "/jobs", { headers: { authorization: `Bearer ${s.token}` }, signal: AbortSignal.timeout(8000) }).catch(() => null);
+      if (!res?.ok) { console.log(`${name}: unreachable`); continue; }
+      const live = (await res.json()).filter((j) => j.status === "running" || j.status === "queued");
+      if (!live.length) { console.log(`${name}: idle`); continue; }
+      for (const j of live) {
+        any = true;
+        const elapsed = j.started ? `${Math.round(Date.now() / 1000 - j.started)}s` : "-";
+        let lastLine = "";
+        try { const t = await (await fetch(`${s.url}/jobs/${j.id}/tail`, { headers: { authorization: `Bearer ${s.token}` } })).json(); lastLine = (t.stdout + t.stderr).trim().split("\n").filter(Boolean).at(-1) ?? ""; } catch { /* no tail */ }
+        const m = /(\d+)\s*\/\s*(\d+)/.exec(lastLine) ?? /(\d+(?:\.\d+)?)\s*%/.exec(lastLine);
+        const pct = m ? (m[2] ? (100 * Number(m[1])) / Number(m[2]) : Number(m[1])) : null;
+        console.log(`${name.padEnd(10)} ${j.kind.padEnd(10)} ${j.id.slice(-6)}  ${j.status.padEnd(7)} ${elapsed.padStart(6)}  ${pct !== null ? bar(Math.min(100, pct)) : ""}${lastLine ? "  " + lastLine.slice(0, 70) : ""}`);
+      }
+    }
+    if (!any) console.log("no running jobs");
+    return;
+  }
+
+  if (cmd === "ui") {
+    const url = `${session.url}/ui`;
+    console.log(`${url}\n(paste the token once in the page; it stays in that browser's localStorage)`);
+    if (!("no-open" in opt)) { const { spawn } = await import("node:child_process"); spawn(process.platform === "darwin" ? "open" : "xdg-open", [url], { stdio: "ignore", detached: true }).unref(); }
     return;
   }
   if (cmd === "env") { console.log(`export OPENAI_BASE_URL=${session.url}/v1\nexport OPENAI_API_KEY=${session.token}`); return; }

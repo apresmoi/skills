@@ -37,6 +37,22 @@ about 1.54 compute units per hour (L4 High-RAM, measured).
   jobs, and releases when nothing is pending. Delete the check once the
   runtime is gone. End every task with `release` unless told otherwise.
 
+## Watching progress
+
+- `--follow` on `run`, `script`, `transcribe`, `diarize`, `youtube`, or
+  `pipeline` streams the job's stdout and stderr to the terminal while
+  waiting. Scripts that print `step 12/60` or `45%` lines are the ones worth
+  following.
+- `node colab.mjs progress` prints one line per queued or running job across
+  every saved session: kind, id suffix, elapsed, a bar when the last log line
+  carries `n/m` or `n%`, and that line. This is what an agent pastes into
+  the chat when asked how things are going.
+- `node colab.mjs ui` opens the VM's own dashboard at `<tunnel>/ui`: GPU,
+  lease countdown with keep and release buttons, vLLM state, the job list,
+  and a live log tail for the selected job. It is one HTML page served by
+  the job server; paste the harness token into it once (it stays in that
+  browser's localStorage). Works from a phone through the same tunnel.
+
 ## Several runtimes
 
 Every command takes `--session <name>` (or `COLAB_SESSION=<name>`); the

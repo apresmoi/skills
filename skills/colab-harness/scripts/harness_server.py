@@ -47,6 +47,8 @@ _vllm: dict = {"proc": None, "model": None, "log": ROOT / "vllm.log", "started":
 
 @app.middleware("http")
 async def auth(request: Request, call_next):
+    if request.url.path == "/ui":
+        return await call_next(request)
     if request.headers.get("authorization") != f"Bearer {TOKEN}":
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     path = request.url.path
@@ -63,6 +65,12 @@ def gpu_info():
         return {"name": name, "memory_used": used, "memory_total": total}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
+
+
+@app.get("/ui")
+def ui():
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(UI_HTML)
 
 
 @app.get("/health")
@@ -219,15 +227,58 @@ def get_file(jid: str, name: str):
     return FileResponse(p)
 
 
+@app.get("/jobs/{jid}/tail")
+def job_tail(jid: str, offset_out: int = 0, offset_err: int = 0):
+    # New bytes of stdout.txt / stderr.txt since the given offsets, for --follow and the UI.
+    if jid not in jobs:
+        raise HTTPException(404, "no such job")
+    d = Path(jobs[jid]["dir"])
+    def read_from(name, off):
+        f = d / name
+        if not f.exists():
+            return "", off
+        with f.open("rb") as fh:
+            fh.seek(off)
+            data = fh.read()
+        return data.decode("utf-8", "replace"), off + len(data)
+    out, no = read_from("stdout.txt", offset_out)
+    err, ne = read_from("stderr.txt", offset_err)
+    return {"status": jobs[jid]["status"], "stdout": out, "stderr": err, "offset_out": no, "offset_err": ne}
+
+
+UI_HTML = r"""<!doctype html><meta charset="utf-8"><title>colab-harness</title>
+<style>body{font:13px/1.4 ui-monospace,Menlo,monospace;margin:0;background:#111;color:#ddd;display:grid;grid-template-columns:280px 1fr;height:100vh}
+aside{padding:12px;border-right:1px solid #333;overflow:auto}main{padding:12px;overflow:auto}h1{font-size:14px;margin:0 0 8px}
+.k{color:#888}.j{padding:4px 6px;border-radius:4px;cursor:pointer;display:flex;gap:8px}.j:hover,.j.sel{background:#222}
+.s-running{color:#fc6}.s-done{color:#6c6}.s-failed{color:#f66}.s-queued{color:#69f}pre{white-space:pre-wrap;background:#181818;padding:8px;border-radius:4px;min-height:200px}
+button{background:#333;color:#ddd;border:1px solid #555;border-radius:4px;padding:4px 8px;cursor:pointer}input{background:#181818;color:#ddd;border:1px solid #555;border-radius:4px;padding:4px;width:100%}</style>
+<aside><h1>colab-harness</h1><div id=auth><input id=tok placeholder="paste HARNESS token once" type=password><button onclick="setTok()">save</button></div>
+<div id=health class=k>connecting…</div><div style="margin:8px 0"><button onclick="act('/lease',{minutes:120})">keep 2h</button> <button onclick="if(confirm('release the runtime?'))act('/shutdown',{stop_vllm:true})">release</button></div><h1>jobs</h1><div id=jobs></div></aside>
+<main><div id=title class=k>select a job</div><pre id=log></pre></main>
+<script>
+const T=()=>localStorage.getItem('harness_token');function setTok(){localStorage.setItem('harness_token',document.getElementById('tok').value.trim());document.getElementById('auth').hidden=true;tick()}
+if(T())document.getElementById('auth').hidden=true;
+const H=()=>({authorization:'Bearer '+T()});let sel=null,off={o:0,e:0},last='';
+async function get(p){const r=await fetch(p,{headers:H()});if(r.status===401){localStorage.removeItem('harness_token');document.getElementById('auth').hidden=false;throw new Error('401')}return r.json()}
+async function act(p,b){await fetch(p,{method:'POST',headers:{...H(),'content-type':'application/json'},body:JSON.stringify(b)});tick()}
+function pick(id){sel=id;off={o:0,e:0};document.getElementById('log').textContent='';document.getElementById('title').textContent=id;tick()}
+async function tick(){try{const h=await get('/health');const L=h.lease;document.getElementById('health').innerHTML=`gpu <b>${h.gpu.name||'-'}</b> ${h.gpu.memory_used||''}<br>lease <b>${Math.max(0,Math.floor(L.expires_in_s/60))} min</b>${L.busy?' (busy)':''}${L.shutdown?' · <span class=s-failed>releasing</span>':''}<br>vllm <b>${h.vllm.model||'-'}</b>${h.vllm.ready?' ready':h.vllm.running?' loading':''}<br>up ${Math.floor(h.uptime_s/60)} min`;
+const js=await get('/jobs');document.getElementById('jobs').innerHTML=js.slice().reverse().map(j=>`<div class="j ${j.id===sel?'sel':''}" onclick="pick('${j.id}')"><span class="s-${j.status}">●</span><span>${j.kind}</span><span class=k>${j.id.slice(9,15)}</span><span class=k>${j.finished?Math.round(j.finished-j.started)+'s':j.started?Math.round(Date.now()/1000-j.started)+'s…':''}</span></div>`).join('');
+if(sel){const t=await get(`/jobs/${sel}/tail?offset_out=${off.o}&offset_err=${off.e}`);off={o:t.offset_out,e:t.offset_err};const el=document.getElementById('log');if(t.stdout||t.stderr){el.textContent+=t.stdout+(t.stderr?'\n[stderr] '+t.stderr:'');el.scrollTop=el.scrollHeight}
+const j=js.find(x=>x.id===sel);if(j&&j.status!==last){last=j.status;if(j.status==='failed')el.textContent+='\n✗ '+j.error;if(j.status==='done')el.textContent+='\n✓ '+JSON.stringify(j.result)}}}catch(e){if(e.message!=='401')document.getElementById('health').textContent='unreachable: '+e.message}}
+tick();setInterval(tick,3000);
+</script>"""
+
+
 def run_shell(job: dict) -> dict:
     cmd = job["params"].get("cmd")
     if not cmd:
         raise ValueError("shell job needs params.cmd")
     timeout = int(job["params"].get("timeout", 600))
-    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout, cwd=job["dir"])
-    (Path(job["dir"]) / "stdout.txt").write_text(proc.stdout)
-    (Path(job["dir"]) / "stderr.txt").write_text(proc.stderr)
-    return {"exit_code": proc.returncode, "stdout_tail": proc.stdout[-2000:], "stderr_tail": proc.stderr[-2000:]}
+    with (Path(job["dir"]) / "stdout.txt").open("w") as out, (Path(job["dir"]) / "stderr.txt").open("w") as err:
+        proc = subprocess.run(cmd, shell=True, stdout=out, stderr=err, text=True, timeout=timeout, cwd=job["dir"])
+    so, se = (Path(job["dir"]) / "stdout.txt").read_text(), (Path(job["dir"]) / "stderr.txt").read_text()
+    return {"exit_code": proc.returncode, "stdout_tail": so[-2000:], "stderr_tail": se[-2000:]}
 
 
 COOKIE_ERROR_PATTERNS = ["sign in", "login required", "cookies", "age-restricted", "private video",
@@ -243,15 +294,27 @@ def run_youtube(job: dict) -> dict:
         raise ValueError("youtube job needs params.url")
     d = Path(job["dir"])
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "yt-dlp"], check=True)
+    # YouTube serves JS challenges ("The page needs to be reloaded"); yt-dlp solves
+    # them with a JS runtime plus its remote challenge-solver components (jianglens
+    # used the same: deno + ejs:github). Install deno once per runtime.
+    deno_bin = Path.home() / ".deno" / "bin"
+    if not (deno_bin / "deno").exists():
+        subprocess.run(["bash", "-c", "curl -fsSL https://deno.land/install.sh | sh -s -- -y >/dev/null 2>&1"], check=False, timeout=300)
+    env = dict(os.environ, PATH=f"{deno_bin}:{os.environ.get('PATH', '')}")
     cookies = d / job["input"] if "input" in job else None
     cmd = [sys.executable, "-m", "yt_dlp", "--no-playlist", "-f", "bestaudio/best", "-x", "--audio-format", "wav",
            "--postprocessor-args", "ffmpeg:-ac 1 -ar 16000", "--write-info-json", "--no-write-playlist-metafiles",
-           "-o", str(d / "audio.%(ext)s"), "--quiet", "--no-warnings", url]
+           "-o", str(d / "audio.%(ext)s"), "--quiet", "--no-warnings", "--retries", "3", "--extractor-retries", "3"]
+    if (deno_bin / "deno").exists():
+        cmd += ["--js-runtimes", "deno", "--remote-components", "ejs:github"]
+    cmd.append(url)
     if cookies:
-        cmd[1:1] = []
         cmd += ["--cookies", str(cookies)]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=int(p.get("timeout", 3600)))
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=int(p.get("timeout", 3600)), env=env)
+        if proc.returncode != 0 and "needs to be reloaded" in (proc.stderr + proc.stdout):
+            time.sleep(3)   # transient challenge page: one retry
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=int(p.get("timeout", 3600)), env=env)
     finally:
         if cookies:
             cookies.unlink(missing_ok=True)
