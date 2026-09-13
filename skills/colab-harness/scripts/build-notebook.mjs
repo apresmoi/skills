@@ -73,6 +73,13 @@ import os, subprocess, time, urllib.request
 SERVER_SRC = r'''${server.replace(/'''/g, "\\'\\'\\'")}'''
 Path("/content/harness_server.py").write_text(SERVER_SRC)
 env = dict(os.environ, HARNESS_TOKEN=HARNESS_TOKEN, HARNESS_PORT=str(HARNESS_PORT), HARNESS_ROOT="/content/harness")
+try:
+    from google.colab import userdata
+    _hf = userdata.get("HF_TOKEN")
+    if _hf:
+        env["HF_TOKEN"] = _hf; print("HF_TOKEN: passed to the server (gated models OK)")
+except Exception:
+    print("HF_TOKEN: not set; gated Hugging Face models will fail to download")
 server_log = open("/content/harness_server.log", "w")
 server_proc = subprocess.Popen([sys.executable, "/content/harness_server.py"], env=env, stdout=server_log, stderr=subprocess.STDOUT)
 for _ in range(60):

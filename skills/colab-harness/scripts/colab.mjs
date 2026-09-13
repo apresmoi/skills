@@ -223,7 +223,7 @@ const main = async () => {
       const st0 = await api(session, "GET", "/vllm/status");
       if (!st0.installed) {
         console.error("vllm not installed on the VM; installing into its own venv (several minutes)…");
-        const inst = await submit(session, "shell", { cmd: "python -m venv /content/vllm-venv && /content/vllm-venv/bin/pip install -q --upgrade pip && /content/vllm-venv/bin/pip install -q vllm", timeout: 2400 });
+        const inst = await submit(session, "shell", { cmd: "rm -rf /content/vllm-venv && pip install -q uv && uv venv -q /content/vllm-venv && uv pip install -q --python /content/vllm-venv/bin/python vllm", timeout: 2400 });
         const r = await waitJob(session, inst.id, { quiet: true });
         if (r.result?.exit_code !== 0) die(`vllm install failed:\n${r.result?.stderr_tail}`, 1);
       }

@@ -328,7 +328,7 @@ def vllm_start(body: dict):
     py = VLLM_VENV / "bin" / "python"
     if not py.exists():
         raise HTTPException(409, f"vllm venv missing at {VLLM_VENV}; create it with a shell job: "
-                                 f"python -m venv {VLLM_VENV} && {VLLM_VENV}/bin/pip install -q vllm")
+                                 f"pip install -q uv && uv venv {VLLM_VENV} && uv pip install --python {VLLM_VENV}/bin/python vllm")
     cmd = [str(py), "-m", "vllm.entrypoints.openai.api_server", "--model", model, "--port", str(VLLM_PORT),
            "--host", "127.0.0.1", "--api-key", TOKEN, "--gpu-memory-utilization", str(body.get("gpu_memory_utilization", 0.9))]
     if body.get("max_model_len"):
