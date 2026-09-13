@@ -1,7 +1,7 @@
 # colab-harness — job server that runs inside a Colab runtime.
 # Started by the Colab_Harness notebook; reached from local through a tunnel.
 # Every route requires  Authorization: Bearer <HARNESS_TOKEN>.
-import json, os, shutil, subprocess, threading, time, uuid
+import json, os, shutil, subprocess, sys, threading, time, uuid
 from pathlib import Path
 from typing import Optional
 from queue import Queue
@@ -20,6 +20,24 @@ VLLM_PORT = 8000
 VLLM_VENV = Path(os.environ.get("HARNESS_VLLM_VENV", "/content/vllm-venv"))
 STARTED = time.time()
 
+LEASE_MIN = int(os.environ.get("HARNESS_LEASE_MIN", "30"))
+_lease = {"expires": time.time() + LEASE_MIN * 60, "shutdown": False, "renewals": 0}
+# Requests that count as activity and renew the lease; polling does not.
+ACTIVITY = {("POST", "/jobs"), ("POST", "/uploads"), ("POST", "/vllm/start"), ("POST", "/vllm/stop")}
+
+
+def renew(minutes: int = LEASE_MIN):
+    _lease["expires"] = max(_lease["expires"], time.time() + minutes * 60)
+    _lease["renewals"] += 1
+
+
+def lease_state() -> dict:
+    busy = any(j["status"] in ("queued", "running") for j in jobs.values())
+    remaining = int(_lease["expires"] - time.time())
+    return {"expires_in_s": remaining, "busy": busy, "shutdown": _lease["shutdown"],
+            "should_shutdown": _lease["shutdown"] or (remaining <= 0 and not busy), "default_minutes": LEASE_MIN}
+
+
 app = FastAPI(title="colab-harness")
 jobs: dict[str, dict] = {}
 queue: Queue = Queue()
@@ -31,6 +49,9 @@ _vllm: dict = {"proc": None, "model": None, "log": ROOT / "vllm.log", "started":
 async def auth(request: Request, call_next):
     if request.headers.get("authorization") != f"Bearer {TOKEN}":
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    path = request.url.path
+    if (request.method, path) in ACTIVITY or path.startswith("/v1/") or (request.method == "PUT" and path.startswith("/uploads/")):
+        renew()
     return await call_next(request)
 
 
@@ -51,7 +72,32 @@ def health():
         "drive_mounted": Path("/content/drive/MyDrive").exists(),
         "jobs": {s: sum(1 for j in jobs.values() if j["status"] == s) for s in ("queued", "running", "done", "failed")},
         "vllm": vllm_status(),
+        "lease": lease_state(),
     }
+
+
+@app.get("/lease")
+def lease_get():
+    return lease_state()
+
+
+@app.post("/lease")
+def lease_post(body: dict):
+    minutes = int(body.get("minutes", LEASE_MIN))
+    if minutes < 1 or minutes > 24 * 60:
+        raise HTTPException(400, "minutes must be 1..1440")
+    _lease["expires"] = time.time() + minutes * 60   # explicit set, may shorten
+    _lease["shutdown"] = False
+    return lease_state()
+
+
+@app.post("/shutdown")
+def shutdown(body: dict = None):
+    # The keep-alive cell sees should_shutdown and unassigns the runtime.
+    _lease["shutdown"] = True
+    if (body or {}).get("stop_vllm", True):
+        vllm_stop()
+    return lease_state()
 
 
 # ---------------- uploads (chunked) ----------------
@@ -212,7 +258,30 @@ def fmt(t: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-KINDS = {"shell": run_shell, "transcribe": run_transcribe}
+def run_script(job: dict) -> dict:
+    # An uploaded .py (or .sh) runs in the job dir with params.args and params.env,
+    # stdout/stderr captured to files, so training and DSPy compiles ship as one file
+    # plus whatever they download. A python venv can be selected with params.python.
+    if "input" not in job:
+        raise ValueError("script job needs an uploaded script file")
+    p = job["params"]
+    src = Path(job["dir"]) / job["input"]
+    py = p.get("python") or sys.executable
+    cmd = ([py, str(src)] if src.suffix == ".py" else ["bash", str(src)]) + [str(a) for a in p.get("args", [])]
+    env = dict(os.environ, **{str(k): str(v) for k, v in (p.get("env") or {}).items()})
+    env.setdefault("HARNESS_JOB_DIR", job["dir"])
+    env.setdefault("HARNESS_TOKEN", TOKEN)
+    env.setdefault("VLLM_BASE_URL", f"http://127.0.0.1:{VLLM_PORT}/v1")
+    timeout = int(p.get("timeout", 6 * 3600))
+    with (Path(job["dir"]) / "stdout.txt").open("w") as out, (Path(job["dir"]) / "stderr.txt").open("w") as err:
+        proc = subprocess.run(cmd, cwd=job["dir"], env=env, stdout=out, stderr=err, timeout=timeout)
+    tail = lambda n: (Path(job["dir"]) / n).read_text()[-2000:]
+    if proc.returncode != 0:
+        raise RuntimeError(f"exit {proc.returncode}: {tail('stderr.txt').strip()[-500:]}")
+    return {"exit_code": proc.returncode, "stdout_tail": tail("stdout.txt"), "stderr_tail": tail("stderr.txt")}
+
+
+KINDS = {"shell": run_shell, "transcribe": run_transcribe, "script": run_script}
 
 
 def worker():

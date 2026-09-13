@@ -102,16 +102,26 @@ if TOKEN_FROM_SECRET:
 else:
     print(f"  node colab.mjs connect {url} {HARNESS_TOKEN}\\n")
 `),
-  code(`#@title 5) Keep alive (leave running)
+  code(`#@title 5) Keep alive, lease watchdog (leave running)
+#@markdown Loops while the local side holds a lease. When the lease expires with
+#@markdown no job running, or after \`colab.mjs release\`, the runtime is unassigned
+#@markdown so a forgotten session stops burning compute units.
 import time, urllib.request, json
+def _get(path):
+    req = urllib.request.Request(f"http://127.0.0.1:{HARNESS_PORT}{path}", headers={"Authorization": f"Bearer {HARNESS_TOKEN}"})
+    return json.loads(urllib.request.urlopen(req, timeout=5).read())
 while True:
     try:
-        req = urllib.request.Request(f"http://127.0.0.1:{HARNESS_PORT}/health", headers={"Authorization": f"Bearer {HARNESS_TOKEN}"})
-        h = json.loads(urllib.request.urlopen(req, timeout=5).read())
-        print(time.strftime("%H:%M:%S"), "up", h["uptime_s"], "s · jobs", h["jobs"], "· vllm", h["vllm"]["model"] or "-", "· gpu", h["gpu"].get("memory_used", "?"))
+        h = _get("/health"); L = h["lease"]
+        print(time.strftime("%H:%M:%S"), f"lease {L['expires_in_s']//60:>3} min · jobs {h['jobs']} · vllm {h['vllm']['model'] or '-'} · gpu {h['gpu'].get('memory_used','?')}")
+        if L["should_shutdown"]:
+            print("lease expired with nothing running" if not L["shutdown"] else "release requested", "→ unassigning runtime")
+            from google.colab import runtime
+            runtime.unassign()
+            break
     except Exception as e:
         print(time.strftime("%H:%M:%S"), "health check failed:", e)
-    time.sleep(300)
+    time.sleep(60)
 `),
 ];
 

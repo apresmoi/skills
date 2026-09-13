@@ -19,6 +19,10 @@ const USAGE = `colab-harness — use a Colab GPU runtime from here.
   node colab.mjs status                      health: GPU, jobs, vLLM
   node colab.mjs run "<shell command>"       run a command on the VM (waits, prints output)
   node colab.mjs transcribe <audio> [--model large-v3] [--language es] [--compute-type float16] [--out DIR]
+  node colab.mjs script <file.py|.sh> [--args "a b"] [--env K=V,K2=V2] [--python PATH] [--out DIR]
+                                             upload and run a script on the VM (train, DSPy compile, ...)
+  node colab.mjs keep [--minutes 120]        extend the lease (default lease: 30 min after last activity)
+  node colab.mjs release                     stop vLLM and unassign the runtime (the kill switch)
   node colab.mjs jobs                        list jobs
   node colab.mjs job <id>                    show one job
   node colab.mjs fetch <id> [--out DIR]      download a job's files
@@ -136,7 +140,23 @@ const main = async () => {
 
   const session = await loadSession();
 
-  if (cmd === "status") { console.log(JSON.stringify(await api(session, "GET", "/health"), null, 2)); return; }
+  if (cmd === "status") {
+    const h = await api(session, "GET", "/health");
+    console.log(JSON.stringify(h, null, 2));
+    if (h.lease) console.error(`lease: ${Math.max(0, Math.floor(h.lease.expires_in_s / 60))} min left${h.lease.busy ? " (job running, kept alive)" : ""}${h.lease.shutdown ? " · RELEASE REQUESTED" : ""}`);
+    return;
+  }
+  if (cmd === "keep") {
+    const minutes = Number(opt.minutes ?? 120);
+    const L = await api(session, "POST", "/lease", { json: { minutes } });
+    console.log(`lease set: ${Math.floor(L.expires_in_s / 60)} min`);
+    return;
+  }
+  if (cmd === "release") {
+    const L = await api(session, "POST", "/shutdown", { json: { stop_vllm: true } });
+    console.log("release requested; the notebook's watchdog unassigns the runtime within a minute.", JSON.stringify(L));
+    return;
+  }
   if (cmd === "env") { console.log(`export OPENAI_BASE_URL=${session.url}/v1\nexport OPENAI_API_KEY=${session.token}`); return; }
   if (cmd === "jobs") {
     for (const j of await api(session, "GET", "/jobs")) console.log(`${j.id}  ${j.kind.padEnd(10)} ${j.status.padEnd(7)} ${j.error ?? ""}`);
@@ -174,6 +194,23 @@ const main = async () => {
     const outDir = opt.out ?? path.join("colab-jobs", job.id);
     await fetchFiles(session, done, outDir);
     console.log(JSON.stringify({ id: job.id, ...done.result, out: outDir }, null, 2));
+    return;
+  }
+
+  if (cmd === "script") {
+    const file = rest[0];
+    if (!file) die("usage: script <file.py|.sh> [--args \"a b\"] [--env K=V,...] [--python PATH] [--out DIR]");
+    const uploadId = await upload(session, file);
+    const params = { upload_id: uploadId, args: opt.args ? opt.args.split(/\s+/) : [], timeout: Number(opt.timeout ?? 21600) };
+    if (opt.env) params.env = Object.fromEntries(opt.env.split(",").map((kv) => kv.split(/=(.*)/s).slice(0, 2)));
+    if (opt.python) params.python = opt.python;
+    const job = await submit(session, "script", params);
+    const done = await waitJob(session, job.id);
+    const outDir = opt.out ?? path.join("colab-jobs", job.id);
+    await fetchFiles(session, done, outDir);
+    if (done.status === "failed") die(`script failed: ${done.error}\n(logs in ${outDir})`, 1);
+    process.stdout.write(done.result.stdout_tail);
+    console.error(`done; files in ${outDir}`);
     return;
   }
 
