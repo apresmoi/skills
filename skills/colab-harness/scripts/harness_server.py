@@ -301,6 +301,12 @@ threading.Thread(target=worker, daemon=True).start()
 
 
 # ---------------- vLLM ----------------
+def vllm_installed() -> bool:
+    # A venv directory alone is not an install: a failed build leaves bin/python behind.
+    py = VLLM_VENV / "bin" / "python"
+    return py.exists() and any(VLLM_VENV.glob("lib/python*/site-packages/vllm/__init__.py"))
+
+
 def vllm_status() -> dict:
     proc = _vllm["proc"]
     alive = proc is not None and proc.poll() is None
@@ -312,7 +318,7 @@ def vllm_status() -> dict:
             ready = False
     return {"running": alive, "ready": ready, "model": _vllm["model"] if alive else None,
             "exit_code": None if alive or proc is None else proc.returncode,
-            "installed": (VLLM_VENV / "bin" / "python").exists()}
+            "installed": vllm_installed()}
 
 
 @app.post("/vllm/start")
@@ -326,16 +332,18 @@ def vllm_start(body: dict):
     # vLLM pins its own torch; installing it into Colab's interpreter breaks the
     # torch/torchaudio CUDA pairing there. It lives in its own venv instead.
     py = VLLM_VENV / "bin" / "python"
-    if not py.exists():
+    if not vllm_installed():
         raise HTTPException(409, f"vllm venv missing at {VLLM_VENV}; create it with a shell job: "
-                                 f"pip install -q uv && uv venv {VLLM_VENV} && uv pip install --python {VLLM_VENV}/bin/python vllm")
+                                 f"pip install -q uv && uv venv {VLLM_VENV} && uv pip install --python {VLLM_VENV}/bin/python vllm ninja")
     cmd = [str(py), "-m", "vllm.entrypoints.openai.api_server", "--model", model, "--port", str(VLLM_PORT),
            "--host", "127.0.0.1", "--api-key", TOKEN, "--gpu-memory-utilization", str(body.get("gpu_memory_utilization", 0.9))]
     if body.get("max_model_len"):
         cmd += ["--max-model-len", str(body["max_model_len"])]
     cmd += [str(a) for a in extra]
     log = open(_vllm["log"], "w")  # noqa: SIM115
-    _vllm["proc"] = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
+    # The venv's bin must lead PATH: vLLM JIT-compiles sampler kernels with ninja.
+    env = dict(os.environ, PATH=f"{VLLM_VENV / 'bin'}:{os.environ.get('PATH', '')}")
+    _vllm["proc"] = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=env)
     _vllm["model"], _vllm["started"] = model, time.time()
     return {"started": True, "model": model, "cmd": cmd}
 

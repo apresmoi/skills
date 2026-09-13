@@ -26,7 +26,7 @@ const USAGE = `colab-harness — use a Colab GPU runtime from here.
   node colab.mjs jobs                        list jobs
   node colab.mjs job <id>                    show one job
   node colab.mjs fetch <id> [--out DIR]      download a job's files
-  node colab.mjs vllm start <model> [--max-model-len N]   start vLLM (installs on first use)
+  node colab.mjs vllm start <model> [--max-model-len N] [--vllm-args "..."]   start vLLM (installs on first use)
   node colab.mjs vllm status | stop
   node colab.mjs chat "<prompt>" [--model M] one non-streamed completion through the tunnel
   node colab.mjs env                         print OPENAI_BASE_URL / OPENAI_API_KEY for other clients
@@ -223,12 +223,13 @@ const main = async () => {
       const st0 = await api(session, "GET", "/vllm/status");
       if (!st0.installed) {
         console.error("vllm not installed on the VM; installing into its own venv (several minutes)…");
-        const inst = await submit(session, "shell", { cmd: "rm -rf /content/vllm-venv && pip install -q uv && uv venv -q /content/vllm-venv && uv pip install -q --python /content/vllm-venv/bin/python vllm", timeout: 2400 });
+        const inst = await submit(session, "shell", { cmd: "rm -rf /content/vllm-venv && pip install -q uv && uv venv -q /content/vllm-venv && uv pip install -q --python /content/vllm-venv/bin/python vllm ninja", timeout: 2400 });
         const r = await waitJob(session, inst.id, { quiet: true });
         if (r.result?.exit_code !== 0) die(`vllm install failed:\n${r.result?.stderr_tail}`, 1);
       }
       const body = { model };
       if (opt["max-model-len"]) body.max_model_len = Number(opt["max-model-len"]);
+      if (opt["vllm-args"]) body.args = opt["vllm-args"].split(/\s+/);   // e.g. --vllm-args "--enforce-eager --dtype half"
       console.log(JSON.stringify(await api(session, "POST", "/vllm/start", { json: body })));
       console.error("waiting for vllm to load the model…");
       for (;;) {
@@ -244,7 +245,10 @@ const main = async () => {
   if (cmd === "reload") {
     const src = await readFile(new URL("./harness_server.py", import.meta.url), "utf8");
     const b64 = Buffer.from(src).toString("base64");
-    const script = `echo ${b64} | base64 -d > /content/harness_server.py && python -c "import ast; ast.parse(open('/content/harness_server.py').read())" && (sleep 1; pkill -f '[h]arness_server.py'; sleep 1; cd /content && setsid nohup python /content/harness_server.py > /content/harness_server.log 2>&1 &) && echo scheduled`;
+    // The relaunch lives in its own script file so the job's command line never
+    // contains the server's name: pkill -f would otherwise kill the relauncher.
+    const restart = Buffer.from("sleep 1\npkill -f 'harness_server.py'\nsleep 1\ncd /content\nexec python /content/harness_server.py > /content/harness_server.log 2>&1\n").toString("base64");
+    const script = `echo ${b64} | base64 -d > /content/harness_server.py && python -c "import ast; ast.parse(open('/content/harness_server.py').read())" && echo ${restart} | base64 -d > /content/harness_restart.sh && (setsid nohup bash /content/harness_restart.sh >/dev/null 2>&1 &) && echo scheduled`;
     await submit(session, "shell", { cmd: script, timeout: 60 });
     console.error("restarting the VM server…");
     for (let i = 0; i < 30; i++) {
