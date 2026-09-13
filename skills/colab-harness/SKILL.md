@@ -1,6 +1,6 @@
 ---
 name: colab-harness
-description: Use a Google Colab GPU runtime (L4/T4, Colab Pro) as a job server driven entirely from the local machine through a cloudflared tunnel — faster-whisper transcription, pyannote diarization, YouTube audio download, a vLLM OpenAI-compatible endpoint, LoRA training pushed to private Hugging Face repos, DSPy compiles, and a catalog of what was trained. The agent starts the runtime itself (Claude in Chrome) and finds its URL itself; after one-time setup the user only says what to run. Use when the user asks to run, train, transcribe, diarize, or serve something on Colab, or asks what models were trained.
+description: Use a Google Colab GPU runtime (L4/T4, Colab Pro) as a job server driven entirely from the local machine through a cloudflared tunnel — faster-whisper transcription, pyannote diarization, YouTube audio download, a vLLM OpenAI-compatible endpoint, LoRA training pushed to private Hugging Face repos, DSPy compiles, and a catalog of what was trained. The agent starts the runtime itself (headless Playwright by default, or Claude in Chrome) and finds its URL itself; after one-time setup the user only says what to run. Use when the user asks to run, train, transcribe, diarize, or serve something on Colab, or asks what models were trained.
 ---
 
 # colab-harness
