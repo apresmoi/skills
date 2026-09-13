@@ -214,7 +214,11 @@ its venv with a chat completion and measured throughput (Qwen 2.5 7B AWQ:
 streams), hot reload, lease watchdog, release; `examples/train_lora.py`
 (Qwen2.5 0.5B, 60 steps in 53 s, adapter fetched) and
 `examples/dspy_compile.py` (22 s against the VM's vLLM, compiled program
-fetched). Rebuild the notebook and rerun after
+fetched); `diarize` on a two-voice clip (pyannote 3.1, correct turns);
+`transcribe --diarization` (every segment labelled correctly); `pipeline`
+on a local file (23 s end to end); `youtube` without cookies fails with the
+`COOKIE_EXPIRED` hand-off as designed. Untested: a YouTube download with a
+valid cookie file, and gated models such as Gemma through vLLM. Rebuild the notebook and rerun after
 changing the server.
 
 ## Adding a job kind
