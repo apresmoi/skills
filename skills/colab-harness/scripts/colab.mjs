@@ -8,14 +8,20 @@ import path from "node:path";
 import process from "node:process";
 
 const HOME = path.join(process.env.COLAB_HARNESS_HOME ?? path.join(homedir(), ".colab-harness"));
-const SESSION = path.join(HOME, "session.json");
 const TOKEN_FILE = path.join(HOME, "token");
+// Sessions are named so several runtimes can be driven at once:
+//   --session train   or   COLAB_SESSION=train   (default: "default")
+const SESSIONS_DIR = path.join(HOME, "sessions");
+const sessionFile = (name) => path.join(SESSIONS_DIR, `${name}.json`);
 const CHUNK = 8 * 1024 * 1024; // well under the tunnel's per-request cap
 
 const USAGE = `colab-harness — use a Colab GPU runtime from here.
 
   node colab.mjs init                        generate the shared token once (store it as Colab secret HARNESS_TOKEN)
   node colab.mjs connect <url> [token]       save this session; token defaults to the one from init
+  node colab.mjs sessions                    list saved sessions and whether each still answers
+  --session <name>                           act on a named session (default "default"; env COLAB_SESSION)
+                                             one runtime per session: e.g. --session train and --session serve
   node colab.mjs status                      health: GPU, jobs, vLLM
   node colab.mjs run "<shell command>"       run a command on the VM (waits, prints output)
   node colab.mjs transcribe <audio> [--model large-v3] [--language es] [--compute-type float16] [--out DIR]
@@ -46,9 +52,10 @@ const parse = (argv) => {
   return { pos, opt };
 };
 
+let SESSION_NAME = "default";
 const loadSession = async () => {
-  try { return JSON.parse(await readFile(SESSION, "utf8")); }
-  catch { die(`no session; run the notebook and paste its connect line (looked in ${SESSION})`, 1); }
+  try { return JSON.parse(await readFile(sessionFile(SESSION_NAME), "utf8")); }
+  catch { die(`no session "${SESSION_NAME}"; run the notebook and use: connect <url> --session ${SESSION_NAME} (looked in ${sessionFile(SESSION_NAME)})`, 1); }
 };
 
 const api = async (session, method, route, { json, body, headers = {}, raw = false } = {}) => {
@@ -115,6 +122,11 @@ const main = async () => {
   const { pos, opt } = parse(process.argv.slice(2));
   const [cmd, ...rest] = pos;
   if (!cmd || cmd === "--help" || cmd === "-h") { console.log(USAGE); return; }
+  SESSION_NAME = opt.session ?? process.env.COLAB_SESSION ?? "default";
+  if (!/^[A-Za-z0-9_-]{1,40}$/.test(SESSION_NAME)) die("--session must be 1-40 chars of letters, digits, - or _");
+  // one-time migration of the pre-sessions layout
+  try { await stat(path.join(HOME, "session.json")); await mkdir(SESSIONS_DIR, { recursive: true, mode: 0o700 });
+    const { rename } = await import("node:fs/promises"); await rename(path.join(HOME, "session.json"), sessionFile("default")); } catch { /* nothing to migrate */ }
 
   if (cmd === "init") {
     const { randomBytes } = await import("node:crypto");
@@ -135,11 +147,26 @@ const main = async () => {
       try { token = (await readFile(TOKEN_FILE, "utf8")).trim(); }
       catch { die("no token given and none stored; run: node colab.mjs init"); }
     }
-    const session = { url: url.replace(/\/+$/, ""), token, connected_at: new Date().toISOString() };
-    await mkdir(HOME, { recursive: true, mode: 0o700 });
-    await writeFile(SESSION, JSON.stringify(session, null, 2) + "\n", { mode: 0o600 });
+    const session = { name: SESSION_NAME, url: url.replace(/\/+$/, ""), token, connected_at: new Date().toISOString() };
+    await mkdir(SESSIONS_DIR, { recursive: true, mode: 0o700 });
+    await writeFile(sessionFile(SESSION_NAME), JSON.stringify(session, null, 2) + "\n", { mode: 0o600 });
     const h = await api(session, "GET", "/health");
-    console.log(`connected: ${session.url}\ngpu: ${h.gpu.name ?? h.gpu.error} · drive: ${h.drive_mounted ? "mounted" : "not mounted"} · uptime ${h.uptime_s}s`);
+    console.log(`connected [${SESSION_NAME}]: ${session.url}\ngpu: ${h.gpu.name ?? h.gpu.error} · drive: ${h.drive_mounted ? "mounted" : "not mounted"} · uptime ${h.uptime_s}s`);
+    return;
+  }
+
+  if (cmd === "sessions") {
+    const { readdir } = await import("node:fs/promises");
+    let names = [];
+    try { names = (await readdir(SESSIONS_DIR)).filter((f) => f.endsWith(".json")).map((f) => f.slice(0, -5)); } catch { /* none */ }
+    if (!names.length) { console.log("no sessions saved"); return; }
+    for (const name of names.sort()) {
+      const s = JSON.parse(await readFile(sessionFile(name), "utf8"));
+      const res = await fetch(s.url + "/health", { headers: { authorization: `Bearer ${s.token}` }, signal: AbortSignal.timeout(8000) }).catch(() => null);
+      let state = "unreachable";
+      if (res?.ok) { const h = await res.json(); state = `up · ${h.gpu.name ?? "no gpu"} · lease ${Math.max(0, Math.floor(h.lease.expires_in_s / 60))} min · vllm ${h.vllm.model ?? "-"}`; }
+      console.log(`${name.padEnd(12)} ${state.padEnd(60)} ${s.url}  (connected ${s.connected_at})`);
+    }
     return;
   }
 

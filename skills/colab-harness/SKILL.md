@@ -79,6 +79,26 @@ node colab.mjs release                                  # kill switch: stop vLLM
 node colab.mjs jobs · job <id> · fetch <id> --out DIR · reload
 ```
 
+## Several runtimes at once: named sessions
+
+Every command takes `--session <name>` (or `COLAB_SESSION=<name>`); the
+default is `default`. Each name is one Colab runtime with its own URL and
+lease, stored in `~/.colab-harness/sessions/<name>.json`. Colab Pro allows
+more than one runtime at a time, each billed separately.
+
+```bash
+node colab.mjs connect <url-1> --session train
+node colab.mjs connect <url-2> --session serve
+node colab.mjs script examples/train_lora.py --session train
+node colab.mjs vllm start Qwen/Qwen2.5-7B-Instruct-AWQ --session serve
+node colab.mjs sessions          # each saved session, reachable or not, lease, vLLM model
+node colab.mjs release --session train
+```
+
+Run one notebook per runtime (open the same notebook twice; Colab assigns a
+new runtime to each tab). `sessions` is the place to look before ending a
+task: every line that says `up` is still billing.
+
 ## Lease and kill switch
 
 A forgotten runtime burns compute units, so the VM only stays up while
