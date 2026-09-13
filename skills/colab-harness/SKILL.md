@@ -139,7 +139,10 @@ tunnel, opened and run by an agent with Claude in Chrome and no human step:
 connect with the stored token, shell job, large-v3 transcription, vLLM in
 its venv with a chat completion and measured throughput (Qwen 2.5 7B AWQ:
 45 tok/s single stream through the tunnel, 843 tok/s aggregate at 32
-streams), hot reload, lease watchdog, release. Rebuild the notebook and rerun after
+streams), hot reload, lease watchdog, release; `examples/train_lora.py`
+(Qwen2.5 0.5B, 60 steps in 53 s, adapter fetched) and
+`examples/dspy_compile.py` (22 s against the VM's vLLM, compiled program
+fetched). Rebuild the notebook and rerun after
 changing the server.
 
 ## Not yet ported from the jianglens notebooks
