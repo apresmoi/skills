@@ -37,6 +37,36 @@ about 1.54 compute units per hour (L4 High-RAM, measured).
   jobs, and releases when nothing is pending. Delete the check once the
   runtime is gone. End every task with `release` unless told otherwise.
 
+## Cost: units, allowance, balance
+
+Colab Pro gives 100 compute units a month; the GPU rate is what the
+Resources panel shows as "Usage rate". The CLI keeps a local ledger
+(`~/.colab-harness/ledger.json`): one entry per connected session with its
+GPU, rate, start, and end, so cost is rate × time with no guessing about
+job durations.
+
+```bash
+node colab.mjs connect <url>            # prints: ≈1.54 units/h → 1.5% of 100/month per hour
+node colab.mjs keep --minutes 120 --dry-run   # prices the time before committing to it
+node colab.mjs status                   # ≈ units this session so far
+node colab.mjs cost                     # this month's sessions, total, % of allowance, balance
+node colab.mjs budget set --monthly 100 --available 499.86   # seed the balance from the Resources panel
+node colab.mjs budget rate --gpu "Tesla T4" --units-per-hour 1.44   # record a measured rate
+```
+
+Rates: the L4 (High-RAM) figure, 1.54 units/h, was measured on 2026-09-13.
+T4 and A100 figures are estimates until measured: open Runtime → View
+resources on a session of that type, read "Usage rate", and record it with
+`budget rate`. Sessions ended by the lease rather than `release` are closed
+in the ledger the next time `sessions` or `cost` finds them unreachable,
+using the last time the CLI saw them, so their cost can be slightly
+underestimated; `release` is exact.
+
+**Agent rule:** quote the per-hour cost when a session starts and the
+`keep --dry-run` figure before extending a lease or launching a job
+expected to take longer than 30 minutes. Report the session cost on
+release.
+
 ## Watching progress
 
 - `--follow` on `run`, `script`, `transcribe`, `diarize`, `youtube`, or

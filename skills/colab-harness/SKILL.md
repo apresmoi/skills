@@ -34,11 +34,15 @@ flags. Each task below has one recipe; read only the one you need.
 1. **Never type a credential into Colab or read one off a page.** The
    harness token is pasted by the user once; the YouTube cookie file is
    seeded by the user and never opened, printed, or copied by an agent.
-2. **A runtime costs compute units every minute.** End every task with
-   `node colab.mjs release` unless the user asked to keep it, and while a
-   runtime is up keep a session-local check every ~10 minutes
-   (`node colab.mjs sessions`). The VM's own lease kills it after 30 idle
-   minutes as the backstop.
+2. **A runtime costs compute units every minute.** Before starting a
+   session or a long job, state the cost: `connect` prints the GPU's rate
+   as units per hour and as a share of the monthly allowance; `keep
+   --dry-run --minutes N` prices a stretch of time; `cost` shows this
+   month's total and the balance. End every task with `node colab.mjs
+   release` (it prints the session's cost) unless the user asked to keep
+   it, and while a runtime is up keep a session-local check every ~10
+   minutes (`node colab.mjs sessions`). The VM's own lease kills it after
+   30 idle minutes as the backstop.
 3. **Do not run a GPU job while vLLM holds the GPU.** vLLM reserves 90% of
    memory; stop it before training or diarizing, or run them first.
 4. **Verify outputs, not exits.** A job is done when its files are fetched

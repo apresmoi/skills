@@ -37,7 +37,10 @@ const USAGE = `colab-harness — use a Colab GPU runtime from here.
                                              youtube (if url) → diarize → transcribe with speakers, one command
   node colab.mjs script <file.py|.sh> [--args "a b"] [--env K=V,K2=V2] [--python PATH] [--out DIR]
                                              upload and run a script on the VM (train, DSPy compile, ...)
-  node colab.mjs keep [--minutes 120]        extend the lease (default lease: 30 min after last activity)
+  node colab.mjs keep [--minutes 120] [--dry-run]   extend the lease; prints the compute-unit cost of that time
+  node colab.mjs cost                        this month's sessions, units, % of the monthly allowance, balance if seeded
+  node colab.mjs budget set --monthly 100 --available <n>   seed the allowance and the balance from Colab's Resources panel
+  node colab.mjs budget rate --gpu "<name>" --units-per-hour N   record a measured rate for a GPU
   node colab.mjs release                     stop vLLM and unassign the runtime (the kill switch)
   node colab.mjs jobs                        list jobs
   node colab.mjs job <id>                    show one job
@@ -59,11 +62,41 @@ const parse = (argv) => {
   const pos = [], opt = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith("--")) { const n = argv[i + 1]; if (["follow", "no-open", "all", "no-cookies", "fetch-audio", "word-timestamps", "force"].includes(a.slice(2)) || n === undefined || n.startsWith("--")) opt[a.slice(2)] = true; else { opt[a.slice(2)] = n; i++; } }
+    if (a.startsWith("--")) { const n = argv[i + 1]; if (["follow", "no-open", "all", "no-cookies", "fetch-audio", "word-timestamps", "force", "dry-run"].includes(a.slice(2)) || n === undefined || n.startsWith("--")) opt[a.slice(2)] = true; else { opt[a.slice(2)] = n; i++; } }
     else pos.push(a);
   }
   return { pos, opt };
 };
+
+// Compute-unit rates per hour by GPU name. Only the L4 figure is measured (Colab
+// Resources panel, Pro plan, 2026-09-13); the others are estimates until measured.
+// Override or add with: node colab.mjs budget rate --gpu "Tesla T4" --units-per-hour 1.44
+const DEFAULT_RATES = { "NVIDIA L4": { rate: 1.54, measured: true }, "Tesla T4": { rate: 1.44, measured: false }, "NVIDIA A100-SXM4-40GB": { rate: 8.47, measured: false }, "NVIDIA A100-SXM4-80GB": { rate: 11.77, measured: false } };
+const BUDGET_FILE = path.join(HOME, "budget.json");
+const LEDGER_FILE = path.join(HOME, "ledger.json");
+const loadJson = async (f, fallback) => { try { return JSON.parse(await readFile(f, "utf8")); } catch { return fallback; } };
+const saveJson = async (f, v) => { await mkdir(HOME, { recursive: true, mode: 0o700 }); await writeFile(f, JSON.stringify(v, null, 2) + "\n", { mode: 0o600 }); };
+const loadBudget = async () => ({ monthly: 100, available: null, as_of: null, rates: {}, ...(await loadJson(BUDGET_FILE, {})) });
+const rateFor = (budget, gpu) => { const r = budget.rates[gpu] ?? DEFAULT_RATES[gpu]; return r ? { ...r, gpu } : { rate: null, measured: false, gpu }; };
+const fmtUnits = (u) => (u === null || u === undefined ? "?" : u.toFixed(2));
+const pctOf = (units, monthly) => `${((100 * units) / monthly).toFixed(1)}% of ${monthly}/month`;
+const now = () => Date.now() / 1000;
+// The ledger records one entry per connected session: gpu, rate, started, last_seen, ended.
+// Units = rate × (ended ?? last_seen − started). Sessions killed by the lease close lazily.
+const touchLedger = async (session, health) => {
+  const ledger = await loadJson(LEDGER_FILE, []);
+  const budget = await loadBudget();
+  let e = ledger.find((x) => x.url === session.url && !x.ended);
+  const gpu = health.gpu?.name ?? "unknown";
+  const t = now();
+  if (!e) { const r = rateFor(budget, gpu); e = { session: session.name ?? SESSION_NAME, url: session.url, gpu, rate: r.rate, measured: r.measured, started: t - (health.uptime_s ?? 0), last_seen: t, ended: null }; ledger.push(e); }
+  else e.last_seen = t;
+  await saveJson(LEDGER_FILE, ledger);
+  return e;
+};
+const closeLedger = async (url, endedAt) => { const ledger = await loadJson(LEDGER_FILE, []); for (const e of ledger) if (e.url === url && !e.ended) e.ended = endedAt ?? e.last_seen; await saveJson(LEDGER_FILE, ledger); };
+const spentSince = async (asOf) => { const since = asOf ? Date.parse(asOf) / 1000 : 0; const ledger = await loadJson(LEDGER_FILE, []); return ledger.reduce((s, e) => { const a = Math.max(e.started, since), b = e.ended ?? e.last_seen; return s + (e.rate && b > a ? e.rate * ((b - a) / 3600) : 0); }, 0); };
+const unitsOf = (e) => (e.rate === null ? null : (e.rate * (((e.ended ?? e.last_seen) - e.started) / 3600)));
 
 let SESSION_NAME = "default";
 const loadSession = async () => {
@@ -238,7 +271,11 @@ const main = async () => {
     await mkdir(SESSIONS_DIR, { recursive: true, mode: 0o700 });
     await writeFile(sessionFile(SESSION_NAME), JSON.stringify(session, null, 2) + "\n", { mode: 0o600 });
     const h = await api(session, "GET", "/health");
+    const e = await touchLedger(session, h);
+    const budget = await loadBudget();
     console.log(`connected [${SESSION_NAME}]: ${session.url}\ngpu: ${h.gpu.name ?? h.gpu.error} · drive: ${h.drive_mounted ? "mounted" : "not mounted"} · uptime ${h.uptime_s}s`);
+    console.log(e.rate === null ? `cost: unknown rate for "${e.gpu}"; set it with: budget rate --gpu "${e.gpu}" --units-per-hour N`
+      : `cost: ≈${e.rate} units/h${e.measured ? "" : " (estimated)"} → ${pctOf(e.rate, budget.monthly)} per hour${budget.available !== null ? `; balance ≈${fmtUnits(budget.available - (await spentSince(budget.as_of)))} units` : ""}`);
     return;
   }
 
@@ -251,7 +288,8 @@ const main = async () => {
       const s = JSON.parse(await readFile(sessionFile(name), "utf8"));
       const res = await fetch(s.url + "/health", { headers: { authorization: `Bearer ${s.token}` }, signal: AbortSignal.timeout(8000) }).catch(() => null);
       let state = "unreachable";
-      if (res?.ok) { const h = await res.json(); state = `up · ${h.gpu.name ?? "no gpu"} · lease ${Math.max(0, Math.floor(h.lease.expires_in_s / 60))} min · vllm ${h.vllm.model ?? "-"}`; }
+      if (res?.ok) { const h = await res.json(); const e = await touchLedger(s, h); state = `up · ${h.gpu.name ?? "no gpu"} · lease ${Math.max(0, Math.floor(h.lease.expires_in_s / 60))} min · vllm ${h.vllm.model ?? "-"} · ≈${fmtUnits(unitsOf(e))} u`; }
+      else await closeLedger(s.url);
       console.log(`${name.padEnd(12)} ${state.padEnd(60)} ${s.url}  (connected ${s.connected_at})`);
     }
     return;
@@ -261,19 +299,57 @@ const main = async () => {
 
   if (cmd === "status") {
     const h = await api(session, "GET", "/health");
+    const e = await touchLedger(session, h);
     console.log(JSON.stringify(h, null, 2));
     if (h.lease) console.error(`lease: ${Math.max(0, Math.floor(h.lease.expires_in_s / 60))} min left${h.lease.busy ? " (job running, kept alive)" : ""}${h.lease.shutdown ? " · RELEASE REQUESTED" : ""}`);
+    console.error(`cost: ≈${fmtUnits(unitsOf(e))} units this session (${e.gpu}${e.rate !== null ? `, ${e.rate}/h${e.measured ? "" : " est."}` : ", unknown rate"})`);
+    return;
+  }
+  if (cmd === "cost" || cmd === "budget") {
+    const budget = await loadBudget();
+    const [sub] = rest;
+    if (cmd === "budget" && sub === "set") {
+      if (opt.monthly) budget.monthly = Number(opt.monthly);
+      if (opt.available !== undefined) { budget.available = Number(opt.available); budget.as_of = new Date().toISOString(); }
+      await saveJson(BUDGET_FILE, budget);
+      console.log(`budget: ${budget.monthly} units/month${budget.available !== null ? `, balance ${budget.available} as of ${budget.as_of.slice(0, 16)}` : ""}`);
+      return;
+    }
+    if (cmd === "budget" && sub === "rate") {
+      if (!opt.gpu || !opt["units-per-hour"]) die('usage: budget rate --gpu "<name as in status>" --units-per-hour N');
+      budget.rates[opt.gpu] = { rate: Number(opt["units-per-hour"]), measured: true };
+      await saveJson(BUDGET_FILE, budget);
+      console.log(`rate for ${opt.gpu}: ${opt["units-per-hour"]} units/h (measured)`);
+      return;
+    }
+    // cost report: this month by session, live sessions counted to now
+    const ledger = await loadJson(LEDGER_FILE, []);
+    const month = new Date().toISOString().slice(0, 7);
+    const rows = ledger.filter((e) => new Date(e.started * 1000).toISOString().slice(0, 7) === month);
+    let total = 0;
+    for (const e of rows) { const un = unitsOf(e); total += un ?? 0; const hrs = (((e.ended ?? e.last_seen) - e.started) / 3600).toFixed(2); console.log(`${new Date(e.started * 1000).toISOString().slice(0, 16).replace("T", " ")}  ${e.session.padEnd(10)} ${e.gpu.padEnd(22)} ${hrs.padStart(5)} h  ≈${fmtUnits(un).padStart(6)} u${e.ended ? "" : "  (open)"}${e.measured || e.rate === null ? "" : "  est."}`); }
+    console.log(`this month: ≈${total.toFixed(2)} units = ${pctOf(total, budget.monthly)}`);
+    if (budget.available !== null) { const left = budget.available - (await spentSince(budget.as_of)); console.log(`balance: ≈${left.toFixed(2)} units left (seeded ${budget.available} on ${budget.as_of.slice(0, 10)}; refresh with: budget set --available <n from Colab's Resources panel>)`); }
+    else console.log("balance: unknown; seed it with: budget set --available <units shown in Colab's Resources panel>");
     return;
   }
   if (cmd === "keep") {
     const minutes = Number(opt.minutes ?? 120);
+    const h = await api(session, "GET", "/health");
+    const e = await touchLedger(session, h);
+    const budget = await loadBudget();
+    const est = e.rate === null ? null : e.rate * (minutes / 60);
+    if ("dry-run" in opt) { console.log(`keeping ${e.gpu} up ${minutes} min ≈ ${fmtUnits(est)} units${e.measured ? "" : " (estimated rate)"} = ${est === null ? "?" : pctOf(est, budget.monthly)}`); return; }
     const L = await api(session, "POST", "/lease", { json: { minutes } });
-    console.log(`lease set: ${Math.floor(L.expires_in_s / 60)} min`);
+    console.log(`lease set: ${Math.floor(L.expires_in_s / 60)} min ≈ ${fmtUnits(est)} units if idle the whole time (${e.gpu}, ${e.rate ?? "?"}/h)`);
     return;
   }
   if (cmd === "release") {
+    const h = await api(session, "GET", "/health");
+    const e = await touchLedger(session, h);
     const L = await api(session, "POST", "/shutdown", { json: { stop_vllm: true } });
-    console.log("release requested; the notebook's watchdog unassigns the runtime within a minute.", JSON.stringify(L));
+    await closeLedger(session.url, now());
+    console.log(`release requested; the notebook's watchdog unassigns the runtime within a minute. session cost ≈${fmtUnits(unitsOf(e))} units (${e.gpu}).`);
     return;
   }
   if (cmd === "progress") {
