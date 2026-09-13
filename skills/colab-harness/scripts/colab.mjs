@@ -502,6 +502,7 @@ repeat steps 2 and 3.`); return;
     const cat = await loadCatalog(); say(`catalog: ${cat.length} trained model${cat.length === 1 ? "" : "s"} (\`models\`)`);
     const cfg = await loadConfig();
     if (!cfg.starter) say("starter: NOT SET → ask the user once: playwright (headless, own Google profile) or chrome (the Claude extension); then: node colab.mjs config set starter <choice>");
+    else if (cfg.starter === "playwright" && await (async () => { try { const r = JSON.parse(await readFile(path.join(HOME, "last-start.json"), "utf8")); process.kill(r.pid, 0); return true; } catch { return false; } })()) say("starter: playwright · profile in use by the running runtime's tab (signed in)");
     else if (cfg.starter === "playwright") { const st = await new Promise((r) => { const { execFile } = require_cp(); execFile(process.execPath, [path.join(SCRIPTS, "colab-start.mjs"), "status"], { timeout: 90000 }, (e, out) => r((out || "").trim() || "status check failed")); }); say(`starter: playwright · ${st}`); }
     else say(`starter: chrome (the agent drives the Claude in Chrome extension; needs that tool in this session)`);
     const sessions = await savedSessions(); let live = 0;
