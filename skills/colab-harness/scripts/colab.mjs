@@ -275,10 +275,23 @@ const fetchFiles = async (session, job, outDir, { all = false } = {}) => {
   for (const name of job.files ?? []) {
     if (name.startsWith("input")) continue;
     if (!all && /^checkpoint-\d+\//.test(name)) { skipped++; continue; }   // trainer checkpoints: big, --all to fetch
-    const res = await api(session, "GET", `/jobs/${job.id}/files/${name}`, { raw: true });
+    // The quick tunnel occasionally stalls a download mid-body; bound each file and retry.
     const dest = path.join(outDir, name);
     await mkdir(path.dirname(dest), { recursive: true });
-    await writeFile(dest, Buffer.from(await res.arrayBuffer()));
+    // Stream to disk with an idle timeout (no bytes for 60 s) rather than a total one, so a
+    // slow tunnel still completes a large file while a stalled one is retried.
+    let ok = false;
+    for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
+      const ctl = new AbortController(); let timer = setTimeout(() => ctl.abort(), 60000);
+      try {
+        const res = await fetch(`${session.url}/jobs/${job.id}/files/${name}`, { headers: { authorization: `Bearer ${session.token}` }, signal: ctl.signal });
+        if (!res.ok) die(`GET /jobs/${job.id}/files/${name} → ${res.status}`, 1);
+        const { createWriteStream } = await import("node:fs"); const out = createWriteStream(dest);
+        for await (const chunk of res.body) { clearTimeout(timer); timer = setTimeout(() => ctl.abort(), 60000); if (!out.write(chunk)) await new Promise((r) => out.once("drain", r)); }
+        await new Promise((r, j) => out.end((e) => (e ? j(e) : r()))); ok = true;
+      } catch (e) { const why = ctl.signal.aborted ? "stalled (no bytes for 60 s)" : e.message; if (attempt === 3) die(`fetch ${name}: ${why} three times; the file stays on the VM (job ${job.id}) and, if pushed, on the hub`, 1); console.error(`fetch ${name}: ${why}; retrying (${attempt}/3)`); }
+      finally { clearTimeout(timer); }
+    }
     console.error(`saved ${dest}`);
   }
   if (skipped) console.error(`skipped ${skipped} checkpoint files (pass --all to fetch them)`);

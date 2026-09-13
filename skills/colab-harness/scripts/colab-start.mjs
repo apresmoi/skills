@@ -106,41 +106,61 @@ async function openNotebook(page) {
 }
 
 async function dismissDialogs(page) {
-  for (const label of ["Run anyway", "Connect anyway", "OK", "Got it"]) {
-    const b = page.getByRole("button", { name: label, exact: true }).first();
-    if (await b.isVisible().catch(() => false)) { await b.click().catch(() => {}); log(`dismissed "${label}"`); await page.waitForTimeout(800); }
+  // Dialog buttons are md-*-button custom elements; some expose role=button, some only text,
+  // so try both. "Grant access" is Colab asking whether this notebook may read the account's
+  // secrets (HARNESS_TOKEN, HF_TOKEN): that is the configured intent, so it is accepted.
+  for (const label of ["Run anyway", "Connect anyway", "Grant access", "OK", "Got it"]) {
+    for (const loc of [page.getByRole("button", { name: label, exact: true }).first(), page.getByText(label, { exact: true }).first()]) {
+      if (await loc.isVisible().catch(() => false)) { await loc.click().catch(() => {}); log(`dismissed "${label}"`); await page.waitForTimeout(1000); break; }
+    }
   }
+}
+
+async function click(page, loc, what) {
+  for (let i = 0; i < 4; i++) {
+    try { await loc.click({ timeout: 4000 }); return; }
+    catch (e) { log(`click "${what}" blocked (${e.message.split("\n")[0].slice(0, 60)}); dismissing dialogs and retrying`); await dismissDialogs(page); await page.waitForTimeout(800); }
+  }
+  throw new Error(`could not click "${what}"`);
 }
 
 async function menu(page, top, item) {
   // Menu items carry their shortcut in the accessible name ("Run all⌘/Ctrl+F9"), so match by prefix.
+  await dismissDialogs(page);
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: new RegExp(`^${top}$`) }).first().click();
+  await click(page, page.getByRole("button", { name: new RegExp(`^${top}$`) }).first(), top);
   const it = page.getByRole("menuitem", { name: new RegExp(`^${item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`) }).first();
   await it.waitFor({ timeout: 10000 });
   return it;
 }
 
 async function setRuntimeType(page) {
-  await (await menu(page, "Runtime", "Change runtime type")).click();
+  await click(page, await menu(page, "Runtime", "Change runtime type"), "Change runtime type");
   // The dialog body is inside <colab-runtime-attributes-selector>'s shadow DOM; role and
   // text locators pierce it, [role=dialog] does not.
   const radio = page.getByRole("radio", { name: new RegExp(`^${GPU}( GPU)?$`) }).first();
   await radio.waitFor({ timeout: 15000 }).catch(() => { throw new Error(`GPU "${GPU}" is not offered in the runtime dialog`); });
-  await radio.click();
+  await click(page, radio, GPU);
   if (opt["high-ram"]) { const hr = page.getByRole("switch", { name: /High-RAM/ }).first(); if (await hr.count()) await hr.click(); }
-  await page.getByRole("button", { name: "Save", exact: true }).first().click();
+  await click(page, page.getByRole("button", { name: "Save", exact: true }).first(), "Save");
   log(`runtime type: ${GPU}`);
   await page.waitForTimeout(1500);
 }
 
-async function waitForTunnel(page, timeoutMs = 6 * 60 * 1000) {
-  const t0 = Date.now(); let lastGpu = null;
+async function waitForTunnel(page, timeoutMs = Number(opt["timeout-min"] ?? 6) * 60 * 1000) {
+  const t0 = Date.now(); let lastGpu = null, lastState = "";
   while (Date.now() - t0 < timeoutMs) {
     await dismissDialogs(page);
+    // Log what the page shows whenever it changes: dialogs (shadow-piercing) and the connect header.
+    const dialogs = (await page.locator("mwc-dialog, md-dialog, [role=dialog], colab-dialog").allInnerTexts().catch(() => [])).map((t) => t.trim().replace(/\s+/g, " ").slice(0, 160)).filter(Boolean);
+    const header = await page.locator("colab-connect-button, #connect, colab-toolbar-button").allInnerTexts().catch(() => []);
+    const state = JSON.stringify({ dialogs, header: header.map((h) => h.trim().replace(/\s+/g, " ")).filter(Boolean).slice(0, 3) });
+    if (state !== lastState) { log(`page: ${state}`); lastState = state; }
+    if (opt.shots) { await mkdir(String(opt.shots), { recursive: true }); await page.screenshot({ path: path.join(String(opt.shots), `${Math.round((Date.now() - t0) / 1000)}s.png`) }).catch(() => {}); }
     // Cell outputs render in sandboxed iframes; scan every frame, not just the top document.
     let text = "";
     for (const f of page.frames()) text += "\n" + (await f.evaluate(() => document.body?.innerText ?? "").catch(() => ""));
+    if (/(^|\n)token: generated for this session/.test(text)) throw new Error("SECRET_MISSING: the notebook could not read the HARNESS_TOKEN secret (no notebook access granted, or the secret is missing); see recipes/setup-token.md");
     const m = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
     if (m) return m[0];
     const g = text.match(/NVIDIA [^\n,]+/); if (g && g[0] !== lastGpu) { lastGpu = g[0]; log(`VM up: ${lastGpu}`); }
@@ -167,28 +187,27 @@ async function main() {
       console.log(label ? `signed in: ${label}` : (cookiesExist ? "not signed in: cookies expired; re-export and `node colab.mjs auth install`" : "not signed in: no cookie file; run `node colab.mjs auth`")); process.exitCode = label ? 0 : 1; return;
     }
     if (cmd === "stop") {
+      // Terminate through Runtime → Manage sessions: the per-row X icon has no accessible
+      // name, so it is clicked by position; one row at a time until "No active sessions".
       await openNotebook(page);
-      // Manage sessions lists every runtime of this account; terminate them all (the X icon per row).
-      await (await menu(page, "Runtime", "Manage sessions")).click(); await page.waitForTimeout(2500);
       let killed = 0;
-      for (let i = 0; i < 8; i++) { const x = page.getByRole("button", { name: /Terminate|terminate/ }).first(); if (!(await x.isVisible().catch(() => false))) break; await x.click(); await page.waitForTimeout(800); const yes = page.getByRole("button", { name: /^(Yes|Terminate|OK)$/ }).last(); if (await yes.isVisible().catch(() => false)) await yes.click(); killed++; await page.waitForTimeout(2000); }
-      if (killed) { console.log(`terminated ${killed} session(s)`); return; }
-      await page.keyboard.press("Escape");
-      const item = await menu(page, "Runtime", "Disconnect and delete runtime");
-      if ((await item.getAttribute("aria-disabled")) === "true" || /disabled/.test((await item.getAttribute("class")) ?? "")) { console.log("no runtime attached"); return; }
-      await item.click(); await page.waitForTimeout(1000);
-      const yes = page.getByRole("button", { name: /^(Yes|OK)$/ }).first();
-      if (await yes.isVisible().catch(() => false)) await yes.click();
-      await page.waitForTimeout(3000);
-      const t = await page.evaluate(() => document.body.innerText);
-      console.log(/Connected to/.test(t) ? "still connected; check Runtime → Manage sessions" : "runtime deleted"); return;
+      for (let i = 0; i < 6; i++) {
+        await (await menu(page, "Runtime", "Manage sessions")).click(); await page.waitForTimeout(2500);
+        const t = await page.evaluate(() => document.body.innerText);
+        if (!/Current session|minutes? ago|hours? ago/.test(t)) break;
+        await page.mouse.click(1040, 317); await page.waitForTimeout(1500);
+        const yes = page.getByText(/^(Yes|Terminate)$/).last(); if (await yes.isVisible().catch(() => false)) await yes.click();
+        await page.waitForTimeout(4000); killed++;
+        await page.keyboard.press("Escape"); await page.waitForTimeout(500);
+      }
+      console.log(killed ? `terminated ${killed} session(s)` : "no active sessions"); return;
     }
     log(`opening the notebook (profile ${PROFILE}, ${opt.headed ? "headed" : "headless"})`);
     await openNotebook(page);
     log(`account: ${(await accountLabel(page)) ?? "unknown"}`);
     await dismissDialogs(page);
     await setRuntimeType(page);
-    await (await menu(page, "Runtime", "Run all")).click();
+    await click(page, await menu(page, "Runtime", "Run all"), "Run all");
     await page.waitForTimeout(1500); await dismissDialogs(page); log("Run all sent");
     const url = await waitForTunnel(page);
     log("tunnel up");
@@ -205,6 +224,7 @@ async function main() {
       }
     }
   } catch (e) {
+    await page.screenshot({ path: path.join(HOME, "start-error.png") }).catch(() => {});
     if (e.message === "NOT_LOGGED_IN") { console.error("colab-start: AUTH_EXPIRED: the Google cookies no longer sign in. Ask the user to re-export (node colab.mjs auth) and run `auth install`."); process.exit(3); }
     console.error("colab-start: " + e.message); process.exit(1);
   } finally { await ctx.close().catch(() => {}); }
