@@ -48,6 +48,9 @@ Google Chrome is used (channel `chrome`), nothing is downloaded.
 - `start` fails with `AUTH_EXPIRED`, or `auth status` says not signed in:
   Google ended the session. Send the `auth` message again from step 2;
   `auth install` reseeds the profile.
+- `auth install` refuses the file for lacking `SID` / `__Secure-1PSID`: it was
+  exported from the Colab page; the login cookies live on `.google.com`, so
+  export from https://www.google.com/.
 - `auth install` says "cookies did not sign in": the export was taken while
   logged out, or from a different account than the one with Colab Pro.
 - `start` hangs on "opening the notebook": run `start --headed` once to see

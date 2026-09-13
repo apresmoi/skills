@@ -415,8 +415,10 @@ It signs in with cookies you export once; nothing is typed and the file never pa
 
 1. In the Chrome where you are logged into Google Colab, install "Get cookies.txt LOCALLY":
    https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc
-2. Open https://colab.research.google.com/ logged in as the account with Colab Pro, click the
-   extension icon, choose Export (current site). A file like google.com_cookies.txt lands in Downloads.
+2. Open https://www.google.com/ logged in as the account with Colab Pro (check the avatar top right),
+   click the extension icon, choose Export. A file named google.com_cookies.txt lands in Downloads.
+   It must be the google.com page, not Colab: the login cookies (SID, __Secure-1PSID) live on .google.com
+   and the extension only exports the current site.
 3. Run:
    node ${path.join(SCRIPTS, "colab.mjs")} auth install
    It moves the newest Google export from Downloads to ~/.colab-harness/google-cookies.txt
@@ -431,7 +433,8 @@ repeat steps 2 and 3.`); return;
       const text = await readFile(src, "utf8").catch(() => die(`cannot read ${src}`));
       const rows = text.split("\n").filter((l) => l && !l.startsWith("#") || l.startsWith("#HttpOnly_")).map((l) => l.replace(/^#HttpOnly_/, "").split("\t")).filter((f) => f.length >= 7);
       const g = rows.filter((f) => /google\.com$|googleusercontent\.com$/.test(f[0].replace(/^\./, "")));
-      if (!g.length) die(`${path.basename(src)} holds no google.com cookies; export from https://colab.research.google.com/ while logged in`);
+      if (!g.length) die(`${path.basename(src)} holds no google.com cookies; export from https://www.google.com/ while logged in`);
+      if (!g.some((f) => /^(SID|__Secure-1PSID|__Secure-3PSID)$/.test(f[5]))) die(`${path.basename(src)} has ${g.length} cookies but none of the Google login cookies (SID / __Secure-1PSID). Export from https://www.google.com/ (not the Colab page) while logged in; leaving the file in Downloads untouched.`);
       await mkdir(HOME, { recursive: true, mode: 0o700 });
       await rename(src, GOOGLE_COOKIES).catch(async () => { await writeFile(GOOGLE_COOKIES, text, { mode: 0o600 }); await unlink(src).catch(() => {}); });
       const { chmod } = await import("node:fs/promises"); await chmod(GOOGLE_COOKIES, 0o600);
