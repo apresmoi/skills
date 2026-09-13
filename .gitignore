@@ -9,3 +9,4 @@ skills/deep-research/research/
 
 # colab-harness fetched job outputs
 colab-jobs/
+__pycache__/
