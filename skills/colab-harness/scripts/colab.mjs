@@ -312,7 +312,7 @@ const superviseJob = async (session, kind, params, { outDir, all = false, opt = 
   // A dead tunnel and a dead runtime look identical from here. Ask the hub where the notebook is
   // publishing now before assuming the VM is gone.
   const rediscover = async () => {
-    if (await runCli(["connect"])) return false;
+    if (await runCli(["connect", "--session", SESSION_NAME])) return false;
     const fresh = await loadSession();
     const probe = await api(fresh, "GET", "/health", { soft: true });
     if (!probe) return false;
@@ -357,8 +357,9 @@ const superviseJob = async (session, kind, params, { outDir, all = false, opt = 
         if (restarts >= maxRestarts) die(`supervise: runtime lost and ${maxRestarts} restarts used; last job ${job.id}`, 1);
         restarts++;
         slog(`restart ${restarts}/${maxRestarts}`);
-        if (await runCli(["start", ...(gpu ? ["--gpu", String(gpu)] : [])])) die("supervise: could not start a new runtime", 1);
-        if (await runCli(["connect"])) die("supervise: could not connect to the new runtime", 1);
+        // Same named session, so a supervised job on --session train never hijacks "default".
+        if (await runCli(["start", "--session", SESSION_NAME, ...(gpu ? ["--gpu", String(gpu)] : [])])) die("supervise: could not start a new runtime", 1);
+        if (await runCli(["connect", "--session", SESSION_NAME])) die("supervise: could not connect to the new runtime", 1);
         session = await loadSession();
         const already = await runningScript(session);
         if (already) {
