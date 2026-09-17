@@ -17,7 +17,7 @@
 // Playwright is resolved from an existing install (env PLAYWRIGHT_ROOT, this skill's
 // node_modules, or any project listed in ~/.colab-harness/config.json "playwright_roots");
 // nothing is downloaded. Uses the installed Google Chrome (channel "chrome").
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -50,8 +50,25 @@ async function loadPlaywright() {
   process.exit(2);
 }
 
+// A crashed or killed starter leaves SingletonLock behind and every later start dies with
+// "profile is already in use". If no process holds it, it is debris: clear it.
+async function clearStaleProfileLock() {
+  const lock = path.join(PROFILE, "SingletonLock");
+  let target;
+  try { target = await readlink(lock); } catch { return; }          // absent, or not a symlink
+  const pid = Number((target.split("-").pop() ?? "").trim());
+  if (pid) {
+    try { process.kill(pid, 0); return; } catch { /* no such process: stale */ }
+  }
+  for (const name of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
+    await rm(path.join(PROFILE, name), { force: true }).catch(() => {});
+  }
+  log(`cleared a stale profile lock (pid ${pid || "unknown"} is gone)`);
+}
+
 async function launch(pw, headed) {
   await mkdir(PROFILE, { recursive: true, mode: 0o700 });
+  await clearStaleProfileLock();
   return pw.chromium.launchPersistentContext(PROFILE, {
     channel: "chrome", headless: !headed, viewport: { width: 1440, height: 900 },
     ignoreDefaultArgs: ["--enable-automation"], args: ["--disable-blink-features=AutomationControlled", "--no-first-run", "--no-default-browser-check"],
