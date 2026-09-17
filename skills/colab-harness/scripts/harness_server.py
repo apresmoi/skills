@@ -386,7 +386,7 @@ COOKIE_ERROR_PATTERNS = ["sign in", "login required", "cookies", "age-restricted
 
 
 def run_youtube(job: dict) -> dict:
-    # Ported from the jianglens YouTube_Manager: bestaudio → wav via ffmpeg, mono 16 kHz.
+    # bestaudio → wav via ffmpeg, mono 16 kHz.
     # An uploaded cookies.txt (Netscape) is used for this job only and deleted after.
     p = job["params"]
     url = p.get("url")
@@ -395,8 +395,8 @@ def run_youtube(job: dict) -> dict:
     d = Path(job["dir"])
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "yt-dlp"], check=True)
     # YouTube serves JS challenges ("The page needs to be reloaded"); yt-dlp solves
-    # them with a JS runtime plus its remote challenge-solver components (jianglens
-    # used the same: deno + ejs:github). Install deno once per runtime.
+    # them with a JS runtime plus its remote challenge-solver components
+    # (deno + ejs:github). Install deno once per runtime.
     deno_bin = Path.home() / ".deno" / "bin"
     if not (deno_bin / "deno").exists():
         subprocess.run(["bash", "-c", "curl -fsSL https://deno.land/install.sh | sh -s -- -y >/dev/null 2>&1"], check=False, timeout=300)
@@ -505,7 +505,7 @@ def run_diarize(job: dict) -> dict:
 
 
 def find_speaker(seg_start, seg_end, turns):
-    # jianglens rule: the speaker with the largest time overlap, else None
+    # the speaker with the largest time overlap, else None
     best, best_ov = None, 0.0
     for t in turns:
         ov = min(seg_end, t["end"]) - max(seg_start, t["start"])

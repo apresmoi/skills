@@ -33,7 +33,7 @@ node colab.mjs youtube <url> [--fetch-audio] [--out DIR]
   `[hh:mm:ss → hh:mm:ss] SPEAKER_00: text`. faster-whisper large-v3,
   float16 on GPU by default.
 - `diarize` output: `dump.json` raw turns, `grouped.json` with same-speaker
-  turns merged across gaps under 3 s (jianglens format). pyannote
+  turns merged across gaps under 3 s. pyannote
   speaker-diarization-3.1 in its own venv; first use builds it (about a
   minute). Speaker labels are `SPEAKER_00`, `SPEAKER_01`, ...
 - `youtube` output: `audio.wav` on the VM (mono 16 kHz), `metadata.youtube.json`

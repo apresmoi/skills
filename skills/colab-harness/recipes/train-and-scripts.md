@@ -61,9 +61,9 @@ entry to `~/.colab-harness/catalog.json`. Give it a name and a description at
 submit time; the owner project is detected from where you run the command:
 
 ```bash
-cd ~/code/glyphbench
+cd ~/code/my-project
 node colab.mjs script examples/train_lora.py --args "..." \
-  --push glyph-router --description "routes glyph prompts to solvers, v1" --tags glyphbench,router
+  --push my-router --description "routes prompts to solvers, v1" --tags my-project,router
 ```
 
 An entry records: `name`, `description`, `tags`, `owner` (cwd, git root,
@@ -74,10 +74,10 @@ and last loss, seconds), parsed from the trainer's `SUMMARY` line.
 
 ```bash
 node colab.mjs models                       # table, newest first, descriptions underneath
-node colab.mjs models search glyph          # over name, description, tags, base, dataset, owner, args
-node colab.mjs models list --owner glyphbench --base qwen [--json]
-node colab.mjs models show glyph-router     # the full entry
-node colab.mjs models edit glyph-router --description "..." --tags a,b
+node colab.mjs models search router         # over name, description, tags, base, dataset, owner, args
+node colab.mjs models list --owner my-project --base qwen [--json]
+node colab.mjs models show my-router     # the full entry
+node colab.mjs models edit my-router --description "..." --tags a,b
 node colab.mjs models sync                  # rebuild from the hub after losing the laptop
 ```
 
