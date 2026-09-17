@@ -54,11 +54,11 @@ them. Each task below has one recipe; read only the one you need.
 | How runtimes get started: the starter preference (playwright, headless, cookie-seeded / chrome), Google auth by cookie export, debugging lost auth | `recipes/setup-starter.md` |
 | Hugging Face token: gated models (Gemma, pyannote) and pushing adapters to private repos | `recipes/setup-hf.md` |
 | YouTube downloads: the cookie file | `recipes/setup-youtube-cookies.md` |
-| Start a session, connect, keep it alive, release it, run several | `recipes/session.md` |
+| Start a session, connect, keep it alive, survive a lost runtime (`--supervise`), release it, run several | `recipes/session.md` |
 | Something failed: every error text seen so far, its cause and fix | `recipes/troubleshooting.md` |
 | Transcribe, diarize, download from YouTube, the one-command pipeline | `recipes/transcribe-diarize.md` |
 | Serve a model with vLLM and use it from any OpenAI client | `recipes/vllm.md` |
-| Run a script on the VM: LoRA training, DSPy compile, anything; keep the result with `--push` (private HF repo); the catalog of trained models (`models list/search/show`) | `recipes/train-and-scripts.md` |
+| Run a script on the VM: LoRA training, DSPy compile, anything; keep the result with `--push` (private HF repo); checkpoint/resume so a lost runtime costs minutes; the catalog of trained models (`models list/search/show`) | `recipes/train-and-scripts.md` |
 
 ## Hard rules for an agent
 
@@ -83,6 +83,14 @@ them. Each task below has one recipe; read only the one you need.
    and read; `status` and `job <id>` show state, `fetch` brings files back.
    For progress on running jobs use `progress` (chat-friendly lines with
    bars), `--follow` (stream one job's log), or `ui` (the VM's dashboard).
+5. **A long job must survive losing its runtime.** Colab can reclaim the VM
+   mid-run whatever the lease says (seen: a 76-minute fine-tune killed at 46
+   minutes, all of it lost). For anything over ~30 minutes, make the script
+   checkpoint to a private hub repo and run it with `script … --supervise
+   --resume-env …`, which renews the lease, restarts a dead runtime and
+   resubmits in resume mode. `recipes/session.md` and
+   `recipes/train-and-scripts.md` have both halves; one without the other
+   only buys a restart from zero.
 
 ## What runs where
 

@@ -51,7 +51,10 @@ const USAGE = `colab-harness — use a Colab GPU runtime from here.
   node colab.mjs pipeline <url|audio> [--language es] [--speakers N] [--out DIR]
                                              youtube (if url) → diarize → transcribe with speakers, one command
   node colab.mjs script <file.py|.sh> [--args "a b"] [--env K=V,K2=V2] [--python PATH] [--out DIR] [--push REPO [--push-dir adapter] [--public]]
+             [--supervise [--resume-env K=V] [--poll 20] [--keep-every 10] [--minutes 60] [--misses 3] [--restarts 3]]
                                              upload and run a script on the VM (train, DSPy compile, ...);
+                                             --supervise survives a lost runtime: renews the lease, restarts the runtime
+                                             and resubmits with --resume-env so a checkpointing script continues;
                                              --push uploads a folder to a PRIVATE Hugging Face repo when it succeeds
   node colab.mjs hf                          Hugging Face token on the VM: user, role, can it push
   --name N --description "..." --tags a,b    with script: catalog the trained model (name defaults to the push repo)
@@ -194,11 +197,13 @@ const loadSession = async () => {
   catch { die(`no session "${SESSION_NAME}"; run the notebook and use: connect <url> --session ${SESSION_NAME} (looked in ${sessionFile(SESSION_NAME)})`, 1); }
 };
 
-const api = async (session, method, route, { json, body, headers = {}, raw = false } = {}) => {
+// soft: return null when the runtime is unreachable (supervision decides what to do) instead of exiting.
+const api = async (session, method, route, { json, body, headers = {}, raw = false, soft = false } = {}) => {
   const res = await fetch(session.url + route, {
     method, body: json !== undefined ? JSON.stringify(json) : body,
     headers: { authorization: `Bearer ${session.token}`, ...(json !== undefined ? { "content-type": "application/json" } : {}), ...headers },
-  }).catch((e) => die(`cannot reach ${session.url}: ${e.cause?.code ?? e.message}. Is the notebook still running?`, 1));
+  }).catch((e) => (soft ? null : die(`cannot reach ${session.url}: ${e.cause?.code ?? e.message}. Is the notebook still running?`, 1)));
+  if (soft && (!res || res.status >= 500)) return null;
   if (raw) return res;
   const text = await res.text();
   let data; try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 500) }; }
@@ -261,6 +266,74 @@ const runYoutube = async (session, url, opt) => {
   const done = await waitJob(session, job.id);
   if (done.status === "failed") die(done.error?.includes("COOKIE_EXPIRED") ? `${done.error}\n\n${cookieHint}` : `youtube job failed: ${done.error}`, 1);
   return done;
+};
+
+const CLI = fileURLToPath(import.meta.url);
+const runCli = (args) => new Promise((resolve) => {
+  const child = spawn(process.execPath, [CLI, ...args], { stdio: ["ignore", "inherit", "inherit"] });
+  child.on("exit", (code) => resolve(code ?? 1));
+});
+const slog = (msg) => console.error(`[supervise ${new Date().toISOString().slice(11, 19)}] ${msg}`);
+
+/**
+ * Run a job to completion across runtime deaths: renew the lease, notice when the runtime stops
+ * answering, start a fresh one, and resubmit the same script. The script itself must checkpoint
+ * (see recipes/train-and-scripts.md) and be told to resume through --resume-env; without that a
+ * restart begins the work again from zero.
+ */
+const superviseJob = async (session, kind, params, { outDir, all = false, opt = {} }) => {
+  const pollMs = Number(opt.poll ?? 20) * 1000;
+  const keepMs = Number(opt["keep-every"] ?? 10) * 60 * 1000;
+  const keepMinutes = Number(opt.minutes ?? 60);
+  const maxMisses = Number(opt.misses ?? 3);
+  const maxRestarts = Number(opt.restarts ?? 3);
+  const resumeEnv = opt["resume-env"] ? Object.fromEntries(String(opt["resume-env"]).split(",").map((kv) => kv.split(/=(.*)/s).slice(0, 2))) : null;
+  if (!resumeEnv) slog("no --resume-env: a restart would redo the whole job. Checkpoint your script and pass one.");
+  // Come back on the same accelerator: a job sized for an L4 will not fit a T4.
+  let gpu = opt.gpu ?? null;
+  if (!gpu) {
+    const h = await api(session, "GET", "/health", { soft: true });
+    const name = h?.gpu?.name ?? "";
+    gpu = /L4/.test(name) ? "L4" : /T4/.test(name) ? "T4" : /A100/.test(name) ? "A100" : null;
+    if (gpu) slog(`restarts will ask for a ${gpu} (the runtime this job started on)`);
+  }
+  let job = await submit(session, kind, params);
+  slog(`job ${job.id} submitted; polling every ${pollMs / 1000}s, lease +${keepMinutes} min every ${keepMs / 60000} min`);
+  let misses = 0, restarts = 0, lastKeep = Date.now(), lastStatus = "";
+  for (;;) {
+    const cur = await api(session, "GET", `/jobs/${job.id}`, { soft: true });
+    if (cur) {
+      misses = 0;
+      if (cur.status !== lastStatus) { slog(`job ${job.id} ${cur.status}`); lastStatus = cur.status; }
+      if (cur.status === "done" || cur.status === "failed") {
+        await fetchFiles(session, cur, outDir, { all });
+        return cur;
+      }
+      if (Date.now() - lastKeep > keepMs) {
+        const L = await api(session, "POST", "/lease", { json: { minutes: keepMinutes }, soft: true });
+        lastKeep = Date.now();
+        slog(L ? `lease renewed (${Math.floor(L.expires_in_s / 60)} min left)` : "lease renewal did not answer");
+      }
+    } else {
+      misses++;
+      slog(`runtime not answering (${misses}/${maxMisses})`);
+      if (misses >= maxMisses) {
+        if (restarts >= maxRestarts) die(`supervise: runtime lost and ${maxRestarts} restarts used; last job ${job.id}`, 1);
+        restarts++;
+        slog(`runtime lost; restart ${restarts}/${maxRestarts}`);
+        if (await runCli(["start", ...(gpu ? ["--gpu", String(gpu)] : [])])) die("supervise: could not start a new runtime", 1);
+        if (await runCli(["connect"])) die("supervise: could not connect to the new runtime", 1);
+        session = await loadSession();
+        if (params.upload_id && opt._file) params = { ...params, upload_id: await upload(session, opt._file) };
+        if (resumeEnv) params = { ...params, env: { ...(params.env ?? {}), ...resumeEnv } };
+        await api(session, "POST", "/lease", { json: { minutes: keepMinutes }, soft: true });
+        job = await submit(session, kind, params);
+        lastKeep = Date.now(); misses = 0; lastStatus = "";
+        slog(`resubmitted as ${job.id}${resumeEnv ? " with resume env" : ""}`);
+      }
+    }
+    await sleep(pollMs);
+  }
 };
 
 const submit = (session, kind, params) => {
@@ -781,10 +854,15 @@ repeat steps 2 and 3.`); return;
       params.catalog = catalogMeta;
       console.error(`will push ${params.push_dir}/ to https://huggingface.co/${params.push} (${params.public ? "PUBLIC" : "private"}) when the script succeeds`);
     }
-    const job = await submit(session, "script", params);
-    const done = await waitJob(session, job.id);
-    const outDir = opt.out ?? path.join("colab-jobs", job.id);
-    await fetchFiles(session, done, outDir, { all: "all" in opt });
+    const outDir = opt.out ?? path.join("colab-jobs", `job-${Date.now()}`);
+    let done;
+    if ("supervise" in opt) {
+      done = await superviseJob(session, "script", params, { outDir, all: "all" in opt, opt: { ...opt, _file: file } });
+    } else {
+      const job = await submit(session, "script", params);
+      done = await waitJob(session, job.id);
+      await fetchFiles(session, done, outDir, { all: "all" in opt });
+    }
     if (done.status === "failed") die(`script failed: ${done.error}\n(logs in ${outDir})`, 1);
     process.stdout.write(done.result.stdout_tail);
     console.error(`done; files in ${outDir}`);

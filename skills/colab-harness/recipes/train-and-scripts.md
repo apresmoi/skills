@@ -113,11 +113,55 @@ accuracy before and after, writes `compiled_program.json`, `summary.json`.
 Measured: 22 s on an L4 with 4 demos. Swap the signature, metric, and
 dataset for a real task; keep `dspy.LM("openai/<model>", api_base=VLLM_BASE_URL, api_key=HARNESS_TOKEN)`.
 
+## Surviving a lost runtime: checkpoint off the VM, resume on restart
+
+Nothing on the VM survives, and Colab can reclaim it mid-run, so a long job needs
+its state somewhere else. The hub repo it will push to anyway works: push the
+adapter plus a tiny progress file every N steps, and read them back when the job
+is told to resume. Two env vars are enough (`node colab.mjs script … --supervise
+--resume-env RESUME=1 --env CKPT_REPO=<user>/<repo>,CKPT_STEPS=50`):
+
+```python
+CKPT_REPO, CKPT_STEPS = os.environ.get("CKPT_REPO", ""), int(os.environ.get("CKPT_STEPS", 100))
+RESUME = os.environ.get("RESUME") == "1"
+
+def save(model, state):                       # every CKPT_STEPS optimizer steps
+    model.save_pretrained(ckpt_dir)
+    json.dump(state, open(f"{ckpt_dir}/progress.json", "w"))   # step, epoch, index within the epoch
+    if CKPT_REPO and os.environ.get("HF_TOKEN"):
+        api = HfApi(token=os.environ["HF_TOKEN"])
+        api.create_repo(CKPT_REPO, private=True, exist_ok=True)
+        try: api.upload_folder(folder_path=ckpt_dir, repo_id=CKPT_REPO, commit_message=f"checkpoint {state['step']}")
+        except Exception as e: print("CKPT_PUSH_FAILED", e)     # a failed push must not kill the run
+
+if RESUME and CKPT_REPO:                       # rebuild and skip what is already done
+    path = snapshot_download(CKPT_REPO, token=os.environ.get("HF_TOKEN"))
+    state = json.load(open(f"{path}/progress.json"))
+    model = PeftModel.from_pretrained(base, path, is_trainable=True)
+    # replay the LR schedule state['step'] times; shuffle each epoch with a seed derived from the
+    # epoch number, then skip the first state['i_in_epoch'] examples, so the order is reproducible
+```
+
+Rules that make this work:
+
+- **Deterministic example order.** Seed the shuffle per epoch (`Random(100 + epoch)`),
+  so "skip the first N of this epoch" means the same thing on the new VM.
+- **Checkpoint the schedule too**, at least the step count, or the restarted run
+  warms up a second time.
+- **Small and frequent beats big and rare**: a rank-16 adapter for an 8B is ~100 MB
+  and pushes in seconds, so every 50 steps is cheap insurance.
+- **Verify the checkpoint, not the intention**: the hub repo's file list and the
+  `progress.json` it serves are the evidence that a restart would find something.
+- The same shape works for any long job — a DSPy compile can checkpoint its
+  compiled program and the examples already scored.
+
 ## Writing your own
 
 - Print progress and end with a sentinel line so the log is self-verifying.
 - Save checkpoints and results under `HARNESS_JOB_DIR`; nothing else on the
   VM survives the runtime.
 - Long runs: `node colab.mjs keep --minutes 240` first, and note the lease
-  never expires while the job is running anyway.
+  never expires while the job is running anyway. For anything over ~30 min,
+  run it with `--supervise` and checkpoint (see the section above): the lease
+  is not what takes a runtime away.
 - GPU-heavy scripts and vLLM cannot share the L4; see the rule in `recipes/vllm.md`.

@@ -46,6 +46,40 @@ bills about 1.54 compute units per hour (L4 High-RAM, measured).
   jobs, and releases when nothing is pending. Delete the check once the
   runtime is gone. End every task with `release` unless told otherwise.
 
+## A job that outlives its runtime: `--supervise`
+
+Colab can take the VM away mid-job: quota exhausted, a backend eviction, the
+tunnel dying. Observed once on an L4: the runtime vanished 46 minutes into a
+76-minute fine-tune with 100 minutes of lease left, and everything the job had
+computed was gone, because a plain `script` run waits on one runtime and exits
+when it cannot reach it.
+
+```bash
+node colab.mjs script train.py --supervise --resume-env RESUME=1 \
+  --env CKPT_REPO=<user>/<repo>,CKPT_STEPS=50 --out results/
+```
+
+`--supervise` replaces the plain wait with a loop that:
+
+- polls the job every `--poll` seconds (default 20) and prints each status change;
+- renews the lease every `--keep-every` minutes (default 10) by `--minutes`
+  (default 60) — ordinary polling does not renew it;
+- treats `--misses` consecutive unreachable polls (default 3) as a dead runtime,
+  then runs `start` and `connect`, re-uploads the script, and resubmits it with
+  the key/values from `--resume-env` added to the job's env;
+- asks for the same accelerator the job started on (override with `--gpu`), because
+  Colab hands out whatever is free and a job sized for an L4 will not fit a T4;
+- gives up after `--restarts` restarts (default 3) rather than looping forever;
+- fetches the job's files when it finally reaches done or failed.
+
+**`--supervise` only preserves work the script itself saved.** The restarted job
+is a new process on a new VM with an empty disk: without checkpoints it redoes
+everything, and `--resume-env` just sets a flag nothing acts on. Pair it with the
+checkpoint/resume pattern in `recipes/train-and-scripts.md`, which keeps the state
+off the VM (a private hub repo), and size `--keep-every` and `CKPT_STEPS` so a
+death costs minutes. Without `--resume-env` the loop still restarts the job, and
+says so up front.
+
 ## Cost: units, allowance, balance
 
 Colab Pro gives 100 compute units a month; the GPU rate is what the
@@ -126,8 +160,12 @@ release.
 Every command takes `--session <name>` (or `COLAB_SESSION=<name>`); the
 default is `default`. One name is one runtime, saved in
 `~/.colab-harness/sessions/<name>.json`. Colab Pro allows more than one
-runtime at a time, each billed separately. Open the notebook once per
-runtime (a second tab gets a second runtime).
+runtime at a time, each billed separately. Use a distinct notebook copy per
+runtime: two tabs of the same notebook can attach to the same runtime. Verify
+different runtime identities before treating them as independent capacity.
+Allocation remains subject to the account's current active-session restriction.
+If Colab reports "Too many sessions", inspect Manage sessions; do not terminate
+working runtimes to make room unless the user authorized that interruption.
 
 ```bash
 node colab.mjs connect <url-1> --session train

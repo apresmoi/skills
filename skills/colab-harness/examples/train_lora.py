@@ -4,8 +4,13 @@
     node colab.mjs script examples/train_lora.py --args "--steps 60 --samples 300"
 
 Runs inside the job directory; writes adapter/, checkpoints, train_log.json.
-Resumable: if a checkpoint-* dir exists in the job dir, training resumes from
-it, so a killed runtime only loses the steps since the last save.
+Resumable twice over:
+  - same VM: a checkpoint-* dir in the job dir is picked up automatically;
+  - new VM (the runtime was reclaimed): pass --ckpt-repo <user>/<repo> and each
+    checkpoint is mirrored to that PRIVATE hub repo, then pulled back when the
+    job is resubmitted with RESUME=1. Use it with:
+      node colab.mjs script examples/train_lora.py --supervise --resume-env RESUME=1 \
+        --args "--ckpt-repo <user>/<repo> --save-every 20"
 """
 import argparse, json, os, subprocess, sys, time
 from pathlib import Path
@@ -19,7 +24,10 @@ p.add_argument("--save-every", type=int, default=20)
 p.add_argument("--lr", type=float, default=2e-4)
 p.add_argument("--rank", type=int, default=16)
 p.add_argument("--max-len", type=int, default=512)
+p.add_argument("--ckpt-repo", default=os.environ.get("CKPT_REPO", ""),
+               help="private hub repo mirroring each checkpoint, so a lost runtime costs only --save-every steps")
 a = p.parse_args()
+RESUME = os.environ.get("RESUME") == "1"   # set by `colab.mjs script --supervise --resume-env RESUME=1`
 
 # deps: torch is already in Colab; the rest is small
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "trl>=0.20", "peft", "datasets", "accelerate"], check=True)
@@ -28,13 +36,39 @@ subprocess.run([sys.executable, "-m", "pip", "uninstall", "-q", "-y", "torchao"]
 
 import torch
 from datasets import load_dataset
+from huggingface_hub import HfApi, snapshot_download
 from peft import LoraConfig
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
 from trl import SFTConfig, SFTTrainer
 
 out = Path(os.environ.get("HARNESS_JOB_DIR", ".")).resolve()
 print(f"model={a.model} dataset={a.dataset} samples={a.samples} steps={a.steps} out={out}", flush=True)
 print("gpu:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "none", flush=True)
+
+# A checkpoint the previous runtime pushed: pull it into this job dir before training.
+if RESUME and a.ckpt_repo and os.environ.get("HF_TOKEN"):
+    try:
+        got = snapshot_download(a.ckpt_repo, token=os.environ["HF_TOKEN"], local_dir=str(out))
+        print("RESUMED_FROM", got, sorted(x.name for x in out.glob("checkpoint-*")), flush=True)
+    except Exception as e:                      # nothing pushed yet, or no access: start clean
+        print("RESUME_UNAVAILABLE", type(e).__name__, str(e)[:160], flush=True)
+
+
+class MirrorCheckpoints(TrainerCallback):
+    """Push every checkpoint off the VM; a failed push must never kill the run."""
+
+    def on_save(self, args, state, control, **kw):
+        if not (a.ckpt_repo and os.environ.get("HF_TOKEN")):
+            return
+        try:
+            api = HfApi(token=os.environ["HF_TOKEN"])
+            api.create_repo(a.ckpt_repo, private=True, exist_ok=True)
+            api.upload_folder(folder_path=str(out), repo_id=a.ckpt_repo, allow_patterns=["checkpoint-*/**"],
+                              commit_message=f"checkpoint step {state.global_step}")
+            print("CHECKPOINT_PUSHED", state.global_step, flush=True)
+        except Exception as e:
+            print("CHECKPOINT_PUSH_FAILED", type(e).__name__, str(e)[:160], flush=True)
+
 
 ds = load_dataset(a.dataset, split=f"train[:{a.samples}]")
 def to_messages(row):
@@ -53,6 +87,7 @@ cfg = SFTConfig(
 lora = LoraConfig(r=a.rank, lora_alpha=2 * a.rank, lora_dropout=0.05, task_type="CAUSAL_LM",
                   target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
 trainer = SFTTrainer(model=model, args=cfg, train_dataset=ds, processing_class=tok, peft_config=lora)
+trainer.add_callback(MirrorCheckpoints())
 
 resume = any(out.glob("checkpoint-*"))
 t0 = time.time()
@@ -62,7 +97,7 @@ tok.save_pretrained(out / "adapter")
 
 log = [x for x in trainer.state.log_history if "loss" in x]
 summary = {"model": a.model, "dataset": a.dataset, "samples": a.samples, "steps": trainer.state.global_step,
-           "resumed": resume, "first_loss": log[0]["loss"] if log else None, "last_loss": log[-1]["loss"] if log else None,
+           "resumed": resume, "ckpt_repo": a.ckpt_repo or None, "first_loss": log[0]["loss"] if log else None, "last_loss": log[-1]["loss"] if log else None,
            "train_seconds": round(time.time() - t0, 1), "adapter": str(out / "adapter")}
 (out / "train_log.json").write_text(json.dumps({"summary": summary, "log": log}, indent=2))
 print("SUMMARY", json.dumps(summary), flush=True)
