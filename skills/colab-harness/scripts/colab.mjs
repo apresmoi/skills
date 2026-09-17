@@ -863,6 +863,10 @@ repeat steps 2 and 3.`); return;
       done = await waitJob(session, job.id);
       await fetchFiles(session, done, outDir, { all: "all" in opt });
     }
+    // A run that wrote a training report should say where it is; reading it is the point of the run.
+    for (const name of ["REPORT.html", "REPORT.md"]) {
+      try { await stat(path.join(outDir, name)); console.error(`report: ${path.resolve(outDir, name)}`); break; } catch { /* none */ }
+    }
     if (done.status === "failed") die(`script failed: ${done.error}\n(logs in ${outDir})`, 1);
     process.stdout.write(done.result.stdout_tail);
     console.error(`done; files in ${outDir}`);

@@ -118,8 +118,21 @@ dataset for a real task; keep `dspy.LM("openai/<model>", api_base=VLLM_BASE_URL,
 A loss that went down is not a result. Before a run counts, it has to answer: does more
 data still help, did it overfit, is it better than doing nothing clever, and is the number
 bigger than the noise. `examples/train_report.py` is a single stdlib-only file that collects
-these and writes `training-report.json` plus a readable `REPORT.md`; `examples/train_lora.py`
-shows it in use. Inline it when your job uploads only one script.
+these and writes three things next to the job's outputs; `examples/train_lora.py` shows it in use.
+Inline it when your job uploads only one script (the harness uploads one file per job).
+
+| File | For |
+|---|---|
+| `REPORT.html` | reading and sending: verdict cards, ladder and loss charts as inline SVG, tables with intervals. Self-contained — no scripts, no data fetched at open time; `open`/`xdg-open` it straight from disk |
+| `REPORT.md` | skimming in a terminal or pasting into an issue; same numbers, ASCII trend |
+| `training-report.json` | comparing runs and feeding dashboards; every raw point plus the `verdicts` block |
+
+`script` prints the report's path when a job lands, so the next step is to open it, not to grep a log.
+
+The page uses the dark skin of the Diagram Design style guide (cream ink on near-black paper, one gold
+accent, serif headings, mono for anything technical, gridlines behind the marks). Provenance sits in the
+eyebrow and the footer: `Report(...).html(tool="colab-harness", source="github.com/apresmoi/skills")` —
+change both when you fork it.
 
 - **Train partially, always — the data ladder.** Train a *fresh* adapter on 25%, 50% and 100%
   of the data and score each on the same eval set. The shape is the answer to "should we label

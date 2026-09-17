@@ -45,24 +45,57 @@ __all__ = ["Report", "bootstrap_ci", "majority_baseline", "ascii_trend"]
 # --- self-contained SVG (no CDN, no JS): the report must open from a file:// path, offline ---
 
 _CSS = """
-:root { --bg:#fbfbfa; --fg:#1f1f1c; --muted:#6b6b66; --line:#dcdcd6; --ok:#1f7a4d; --bad:#b3261e; --warn:#8a6d1f; --accent:#2f6fdb; }
-@media (prefers-color-scheme: dark) { :root { --bg:#16161a; --fg:#ecece8; --muted:#a0a09a; --line:#33333a; --ok:#59c48b; --bad:#ef6a62; --warn:#d9b44a; --accent:#7aa5ef; } }
-* { box-sizing:border-box } body { margin:0; padding:32px 16px; background:var(--bg); color:var(--fg);
-  font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
-main { max-width:920px; margin:0 auto } h1 { font-size:24px; margin:0 0 4px } h2 { font-size:17px; margin:32px 0 10px }
-.sub { color:var(--muted); margin:0 0 24px } .cards { display:flex; flex-wrap:wrap; gap:12px }
-.card { flex:1 1 200px; border:1px solid var(--line); border-radius:10px; padding:12px 14px; background:transparent }
-.card h3 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 6px }
-.card .big { font-size:18px; font-weight:600 } .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)}
-table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; margin:8px 0 }
-th,td { border-bottom:1px solid var(--line); padding:6px 8px; text-align:right } th:first-child,td:first-child { text-align:left }
-th { font-weight:600; color:var(--muted); font-size:13px } figure { margin:12px 0 } figcaption { color:var(--muted); font-size:13px; margin-top:4px }
-ul { padding-left:18px } li { margin:3px 0 } code { background:color-mix(in srgb, var(--fg) 8%, transparent); padding:1px 5px; border-radius:4px }
+*, *::before, *::after { box-sizing:border-box; margin:0; padding:0 }
+:root {
+  --paper:#14110E; --paper-2:#1C1813; --ink:#E8E0D0; --muted:#8F8470; --soft:#7A705E;
+  --rule:rgba(232,224,208,0.14); --rule-solid:rgba(232,224,208,0.32);
+  --accent:#D9A441; --accent-tint:rgba(217,164,65,0.12); --link:#6EBE85; --warn:#C9784A;
+  --sans:'Geist',system-ui,-apple-system,sans-serif; --serif:'Instrument Serif',Georgia,serif;
+  --mono:'Geist Mono',ui-monospace,SFMono-Regular,monospace;
+}
+body { font-family:var(--sans); background:var(--paper); color:var(--ink); padding:3rem 2rem; line-height:1.55;
+       -webkit-font-smoothing:antialiased }
+.frame { max-width:1040px; margin:0 auto }
+.eyebrow { font-family:var(--mono); font-size:0.66rem; font-weight:500; letter-spacing:0.18em; text-transform:uppercase;
+           color:var(--muted); margin-bottom:0.5rem }
+h1 { font-family:var(--serif); font-size:clamp(1.6rem,2.4vw + 0.75rem,2.2rem); font-weight:400; letter-spacing:-0.02em;
+     line-height:1.15 }
+h2 { font-family:var(--serif); font-weight:400; font-size:1.3rem; letter-spacing:-0.01em; margin:3rem 0 0.75rem }
+.lede { font-family:var(--mono); font-size:0.75rem; color:var(--muted); margin:0.5rem 0 2rem; letter-spacing:0.02em }
+.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(196px,1fr)); gap:12px; margin-bottom:0.5rem }
+.card { border:1px solid var(--rule); border-radius:8px; padding:14px 16px; background:var(--paper-2) }
+.card.focal { border-color:var(--accent); background:var(--accent-tint) }
+.card h3 { font-family:var(--mono); font-size:0.6rem; font-weight:500; letter-spacing:0.18em; text-transform:uppercase;
+           color:var(--soft); margin-bottom:6px }
+.card .big { font-size:1.05rem; font-weight:600; letter-spacing:-0.01em }
+.card .why { font-family:var(--mono); font-size:0.68rem; color:var(--muted); margin-top:3px }
+.good { color:var(--link) } .bad { color:var(--warn) } .focus { color:var(--accent) }
+table { border-collapse:collapse; width:100%; margin:0.75rem 0; font-variant-numeric:tabular-nums }
+th,td { padding:7px 10px; text-align:right; border-bottom:1px solid var(--rule) }
+th:first-child,td:first-child { text-align:left }
+th { font-family:var(--mono); font-size:0.62rem; font-weight:500; letter-spacing:0.12em; text-transform:uppercase;
+     color:var(--soft); border-bottom:1px solid var(--rule-solid) }
+td { font-size:0.88rem } td .ci { font-family:var(--mono); font-size:0.7rem; color:var(--soft) }
+figure { margin:1rem 0 } figcaption { font-family:var(--mono); font-size:0.7rem; color:var(--muted); margin-top:0.6rem;
+          max-width:72ch; line-height:1.6 }
+ul { list-style:none } li { margin:5px 0; font-size:0.9rem; padding-left:14px; position:relative }
+li::before { content:"—"; position:absolute; left:0; color:var(--soft) }
+.note { font-family:var(--serif); font-style:italic; font-size:0.95rem; color:var(--muted); margin-top:0.5rem }
+footer { margin-top:3rem; padding-top:1rem; border-top:1px solid var(--rule); font-family:var(--mono);
+         font-size:0.65rem; letter-spacing:0.08em; color:var(--soft); text-transform:uppercase }
 """
 
+_FONTS = ('<link rel="preconnect" href="https://fonts.googleapis.com">'
+          '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+          '<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600'
+          '&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">')
+# Offline the link is ignored and the stacks fall back to system serif/sans/mono; layout is unaffected.
 
-def _svg_lines(series, width=860, height=260, xlabel="", ylabel="", pad=46):
-    """series: {name: [(x, y), ...]} -> one inline SVG, axes labelled with real values."""
+_SERIES = ["var(--accent)", "#82a0c0", "#9caf8f", "#d3ad7a", "#8d8298"]   # one accent, then desaturated non-focal
+
+
+def _svg_lines(series, width=1000, height=340, xlabel="", ylabel="", pad_l=64, pad_b=48, pad_t=34, pad_r=16):
+    """Editorial line chart: gridlines behind marks, mono tick labels, accent reserved for the first series."""
     pts = [p for v in series.values() for p in v]
     if len(pts) < 2:
         return ""
@@ -72,27 +105,45 @@ def _svg_lines(series, width=860, height=260, xlabel="", ylabel="", pad=46):
         x1 = x0 + 1
     if y1 == y0:
         y0, y1 = y0 - 0.01, y1 + 0.01
-    span = (y1 - y0) * 0.12
-    y0, y1 = y0 - span, y1 + span
-    sx = lambda x: pad + (x - x0) / (x1 - x0) * (width - pad - 14)
-    sy = lambda y: height - pad - (y - y0) / (y1 - y0) * (height - pad - 16)
-    colors = ["var(--accent)", "var(--bad)", "var(--ok)", "var(--warn)", "var(--muted)"]
-    out = [f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="{xlabel} vs {ylabel}">']
-    for i in range(4):                                     # horizontal guides + y ticks
-        y = y0 + (y1 - y0) * i / 3
-        out.append(f'<line x1="{pad}" y1="{sy(y):.1f}" x2="{width - 14}" y2="{sy(y):.1f}" stroke="var(--line)" stroke-width="1"/>')
-        out.append(f'<text x="{pad - 6}" y="{sy(y) + 4:.1f}" font-size="11" fill="var(--muted)" text-anchor="end">{y:.3g}</text>')
+    m = (y1 - y0) * 0.14
+    y0, y1 = y0 - m, y1 + m
+    sx = lambda x: pad_l + (x - x0) / (x1 - x0) * (width - pad_l - pad_r)
+    sy = lambda y: height - pad_b - (y - y0) / (y1 - y0) * (height - pad_b - pad_t)
+    o = [f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg" role="img" '
+         f'aria-label="{_esc(ylabel or "value")} against {_esc(xlabel)}">']
+    for i in range(5):                                            # gridlines first, marks on top
+        y = y0 + (y1 - y0) * i / 4
+        o.append(f'<line x1="{pad_l}" y1="{sy(y):.1f}" x2="{width - pad_r}" y2="{sy(y):.1f}" '
+                 f'stroke="rgba(232,224,208,0.08)" stroke-width="0.8"/>')
+        o.append(f'<text x="{pad_l - 10}" y="{sy(y) + 3.5:.1f}" font-family="Geist Mono, monospace" font-size="9" '
+                 f'fill="#7A705E" text-anchor="end">{y:.3g}</text>')
+    o.append(f'<line x1="{pad_l}" y1="{height - pad_b}" x2="{width - pad_r}" y2="{height - pad_b}" '
+             f'stroke="rgba(232,224,208,0.32)" stroke-width="1"/>')
     for i, (name, vals) in enumerate(series.items()):
-        c = colors[i % len(colors)]
-        pth = " ".join(f"{'M' if j == 0 else 'L'}{sx(x):.1f},{sy(y):.1f}" for j, (x, y) in enumerate(sorted(vals)))
-        out.append(f'<path d="{pth}" fill="none" stroke="{c}" stroke-width="2"/>')
-        out += [f'<circle cx="{sx(x):.1f}" cy="{sy(y):.1f}" r="3.2" fill="{c}"/>' for x, y in vals]
-        out.append(f'<text x="{pad + 8 + i * 150}" y="14" font-size="12" fill="{c}">■ {name}</text>')
-    out.append(f'<text x="{pad}" y="{height - 12}" font-size="11" fill="var(--muted)">{x0:g}</text>')
-    out.append(f'<text x="{width - 14}" y="{height - 12}" font-size="11" fill="var(--muted)" text-anchor="end">{x1:g}</text>')
-    out.append(f'<text x="{width / 2:.0f}" y="{height - 12}" font-size="11" fill="var(--muted)" text-anchor="middle">{xlabel}</text>')
-    out.append("</svg>")
-    return "".join(out)
+        c = _SERIES[i % len(_SERIES)]
+        vals = sorted(vals)
+        d = " ".join(f"{'M' if j == 0 else 'L'}{sx(x):.1f},{sy(y):.1f}" for j, (x, y) in enumerate(vals))
+        o.append(f'<path d="{d}" fill="none" stroke="{c}" stroke-width="{1.6 if i == 0 else 1.2}" '
+                 f'stroke-linejoin="round" stroke-linecap="round"/>')
+        for x, y in vals:
+            o.append(f'<circle cx="{sx(x):.1f}" cy="{sy(y):.1f}" r="{3.4 if i == 0 else 2.6}" fill="{c}"/>')
+        last = vals[-1]
+        o.append(f'<text x="{pad_l + i * 168}" y="16" font-family="Geist Mono, monospace" font-size="8" '
+                 f'letter-spacing="0.14em" fill="{c}">■ {_esc(name).upper()}</text>')
+        o.append(f'<text x="{min(width - pad_r, sx(last[0]) + 8):.1f}" y="{sy(last[1]) - 8:.1f}" '
+                 f'font-family="Geist Mono, monospace" font-size="9" fill="{c}" text-anchor="end">{last[1]:.3g}</text>')
+    for x, anchor in ((x0, "start"), (x1, "end")):
+        o.append(f'<text x="{sx(x):.1f}" y="{height - pad_b + 18:.1f}" font-family="Geist Mono, monospace" '
+                 f'font-size="9" fill="#7A705E" text-anchor="{anchor}">{x:g}</text>')
+    if xlabel:
+        o.append(f'<text x="{(pad_l + width - pad_r) / 2:.0f}" y="{height - 10}" font-family="Geist Mono, monospace" '
+                 f'font-size="7.5" letter-spacing="0.18em" fill="#7A705E" text-anchor="middle">{_esc(xlabel).upper()}</text>')
+    if ylabel:
+        o.append(f'<text transform="rotate(-90 18 {(height - pad_b + pad_t) / 2:.0f})" x="18" '
+                 f'y="{(height - pad_b + pad_t) / 2:.0f}" font-family="Geist Mono, monospace" font-size="7.5" '
+                 f'letter-spacing="0.18em" fill="#7A705E" text-anchor="middle">{_esc(ylabel).upper()}</text>')
+    o.append("</svg>")
+    return "".join(o)
 
 
 def _esc(x):
@@ -325,74 +376,92 @@ class Report:
             L += ["", "## Notes", ""] + [f"- {n}" for n in r["notes"]]
         return "\n".join(L) + "\n"
 
-    def html(self):
-        """Self-contained page: charts as inline SVG, no scripts, opens from disk offline."""
+    def html(self, source="github.com/apresmoi/skills", tool="colab-harness"):
+        """Self-contained editorial page (dark skin of the Diagram Design style guide): no scripts,
+        no external assets beyond the font stylesheet, readable from a file:// path."""
         r, v = self.r, self.verdicts()
-        o, lk = v["overfitting"], r["leakage"]
+        o, lk, gains = v["overfitting"], r["leakage"], v["data_scaling"]
         cards = []
-        gains = v["data_scaling"]
         if gains:
-            worst = max(gains.items(), key=lambda kv: abs(kv[1]["late_gain"]))
-            cls = {"still climbing": "ok", "flattening": "warn", "noise": "bad", "flat": "bad"}.get(worst[1]["verdict"], "")
-            cards.append(("More data?", f'<span class="{cls}">{worst[1]["verdict"]}</span>',
-                          f'{_esc(worst[0])} {worst[1]["mid"]:.3f} → {worst[1]["last"]:.3f} on the last doubling'))
-        cards.append(("Overfitting", f'<span class="{"bad" if o["status"] == "overfitting" else "ok" if o["status"] == "ok" else "warn"}">{o["status"]}</span>',
-                      f'keep step {o["keep_checkpoint_at_step"]}' if o.get("keep_checkpoint_at_step") else _esc(o.get("why", ""))))
+            k, g = max(gains.items(), key=lambda kv: abs(kv[1]["late_gain"]))
+            tone = {"still climbing": "good", "flattening": "focus", "noise": "bad", "flat": "bad"}.get(g["verdict"], "")
+            cards.append(("More data?", f'<span class="{tone}">{g["verdict"]}</span>',
+                          f'{_esc(k)} {g["late_gain"]:+.3f} on the last doubling', tone == "good"))
+        cards.append(("Overfitting",
+                      f'<span class="{"bad" if o["status"] == "overfitting" else "good" if o["status"] == "ok" else ""}">{o["status"]}</span>',
+                      f'keep step {o["keep_checkpoint_at_step"]}' if o.get("keep_checkpoint_at_step") else _esc(o.get("why", "")),
+                      o["status"] == "overfitting"))
         if v["baselines_cleared"]:
             bad = [n for n, b in v["baselines_cleared"].items() if not b["cleared"]]
-            cards.append(("Baselines", f'<span class="{"bad" if bad else "ok"}">{"below " + ", ".join(bad) if bad else "cleared"}</span>',
-                          " · ".join(r["baselines"])))
+            cards.append(("Baselines", f'<span class="{"bad" if bad else "good"}">{"below " + ", ".join(bad) if bad else "cleared"}</span>',
+                          " · ".join(r["baselines"]) or "—", bool(bad)))
         if lk:
-            cards.append(("Leakage", f'<span class="{"ok" if lk["clean"] else "bad"}">{"clean" if lk["clean"] else "contaminated"}</span>',
-                          f'{lk["shared_ids"]} shared ids · {lk["duplicate_prompts"]} duplicate prompts'))
+            cards.append(("Leakage", f'<span class="{"good" if lk["clean"] else "bad"}">{"clean" if lk["clean"] else "contaminated"}</span>',
+                          f'{lk["shared_ids"]} shared ids · {lk["duplicate_prompts"]} dup prompts', not lk["clean"]))
         if r["cost"]:
-            cards.append(("Cost", f'{round(r["cost"]["seconds"] / 60)} min', f'{_esc(r["cost"]["gpu"])}'
-                          + (f' · ≈{r["cost"]["units"]} units' if r["cost"]["units"] else "")))
-        H = [f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
-             f"<title>{_esc(r['run'])} — training report</title><style>{_CSS}</style><main>",
+            cards.append(("Cost", f'{round(r["cost"]["seconds"] / 60)} min',
+                          _esc(r["cost"]["gpu"]) + (f' · ≈{r["cost"]["units"]} units' if r["cost"]["units"] else ""), False))
+
+        data_line = " · ".join(f"{k} {v2}" for k, v2 in r["data"].items()) or "—"
+        H = ['<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">',
+             '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+             f"<title>{_esc(r['run'])} · training report</title>", _FONTS, f"<style>{_CSS}</style></head><body>",
+             '<div class="frame">',
+             f'<p class="eyebrow">Training report · {_esc(tool)}</p>',
              f"<h1>{_esc(r['run'])}</h1>",
-             f"<p class=sub><code>{_esc(r['model'])}</code> · " + " · ".join(f"{k}: {_esc(val)}" for k, val in r["data"].items()) + "</p>",
-             '<div class=cards>' + "".join(f"<div class=card><h3>{t}</h3><div class=big>{b}</div><div class=sub style='margin:2px 0 0'>{s2}</div></div>"
-                                           for t, b, s2 in cards) + "</div>"]
+             f'<p class="lede">{_esc(r["model"])} · {_esc(data_line)}</p>',
+             '<div class="cards">' + "".join(
+                 f'<div class="card{" focal" if focal else ""}"><h3>{t}</h3><div class="big">{b}</div>'
+                 f'<div class="why">{w}</div></div>' for t, b, w, focal in cards) + "</div>"]
+
         if r["stages"]:
             keys = self._headline()
             ladder = {k: [(st["fraction"], st["metrics"][k]) for st in r["stages"] if k in st["metrics"]] for k in keys}
-            ladder = {k: v2 for k, v2 in ladder.items() if len(v2) > 1}
-            H += ["<h2>Data ladder</h2>",
-                  f'<figure>{_svg_lines(ladder, xlabel="fraction of training data")}'
-                  f"<figcaption>Each rung is a fresh adapter trained on that share of the data, scored on the same eval set. "
-                  f"A flat right-hand end means more labelling buys little.</figcaption></figure>",
+            ladder = {k: pts for k, pts in ladder.items() if len(pts) > 1}
+            H += ["<h2>Does more data still help?</h2>",
+                  f'<figure>{_svg_lines(ladder, xlabel="share of the training data", ylabel="score")}'
+                  "<figcaption>Each rung is a fresh adapter trained on that share of the data and scored on the same "
+                  "held-out set. A flat right-hand end means further labelling buys little; a rising one means the "
+                  "curve has not been paid out yet.</figcaption></figure>",
                   "<table><tr><th>fraction</th><th>examples</th>" + "".join(f"<th>{_esc(k)}</th>" for k in keys) + "</tr>"]
             for st in r["stages"]:
-                H.append(f"<tr><td>{st['fraction']:.0%}</td><td>{st['examples']}</td>"
-                         + "".join(f"<td>{st['metrics'].get(k, float('nan')):.3f}"
-                                   + (f" <span class=sub>±{st['ci'][k]['half_width']:.2f}</span>" if st.get("ci", {}).get(k) else "")
-                                   + "</td>" for k in keys) + "</tr>")
-            H += ["</table>", "<ul>"] + [f"<li><b>{_esc(k)}</b>{' <span class=sub>(lower is better)</span>' if g['lower_is_better'] else ''}: "
-                                         f"{g['first']:.3f} → {g['mid']:.3f} → {g['last']:.3f} "
-                                         f"(last doubling {g['late_gain']:+.3f}) — <b>{g['verdict']}</b>"
-                                         + ("" if g["half_width"] is not None else
-                                            ' <span class=sub>(no interval — threshold only)</span>') + "</li>"
-                                         for k, g in gains.items()] + ["</ul>"]
+                H.append(f'<tr><td>{st["fraction"]:.0%}</td><td>{st["examples"]}</td>'
+                         + "".join(f'<td>{st["metrics"].get(k, float("nan")):.3f}'
+                                   + (f' <span class="ci">±{st["ci"][k]["half_width"]:.2f}</span>'
+                                      if st.get("ci", {}).get(k) else "") + "</td>" for k in keys) + "</tr>")
+            H += ["</table>", "<ul>"] + [
+                f'<li><b>{_esc(k)}</b>{" (lower is better)" if g["lower_is_better"] else ""}: '
+                f'{g["first"]:.3f} → {g["mid"]:.3f} → {g["last"]:.3f} — <span class="focus">{g["verdict"]}</span>'
+                + ("" if g["half_width"] is not None else ' <span class="ci">(threshold only — no interval)</span>')
+                + "</li>" for k, g in gains.items()] + ["</ul>"]
+
         curve = {}
         for c in r["curve"]:
             if c["loss"] is not None:
                 curve.setdefault(f"{c['split']} loss", []).append((c["step"], c["loss"]))
         if curve:
-            H += ["<h2>Training curve</h2>", f'<figure>{_svg_lines(curve, xlabel="optimizer step")}'
-                  "<figcaption>Validation rising while training falls is overfitting; the lowest validation point is the checkpoint to keep."
-                  "</figcaption></figure>"]
+            H += ["<h2>Did it overfit?</h2>",
+                  f'<figure>{_svg_lines(curve, xlabel="optimizer step", ylabel="loss")}'
+                  "<figcaption>Validation turning up while training keeps falling is memorisation. The lowest "
+                  "validation point is the checkpoint worth keeping.</figcaption></figure>"]
+
         if r["baselines"]:
-            H += ["<h2>Baselines</h2><table><tr><th>baseline</th><th>metric</th><th>value</th></tr>"]
+            H += ["<h2>Against what?</h2>",
+                  "<table><tr><th>baseline</th><th>metric</th><th>value</th></tr>"]
             for name, b in r["baselines"].items():
                 for k, val in b.items():
                     H.append(f"<tr><td>{_esc(name)}</td><td>{_esc(k)}</td><td>{val:.3f}</td></tr>")
             H.append("</table>")
+            H.append('<p class="note">A score means nothing until it clears both the untrained model and the '
+                     "trivial predictor.</p>")
         if r["ceiling"]:
-            H += ["<h2>Ceiling</h2>", f"<p>{_esc(r['ceiling']['description'])}</p>"]
+            H += ["<h2>Ceiling</h2>", f'<p class="note">{_esc(r["ceiling"]["description"])}</p>']
         if r["notes"]:
             H += ["<h2>Notes</h2><ul>"] + [f"<li>{_esc(n)}</li>" for n in r["notes"]] + ["</ul>"]
-        H.append("</main></html>")
+
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(r.get("finished") or time.time()))
+        H.append(f'<footer>{_esc(tool)} · {_esc(source)} · generated {when}</footer>')
+        H.append("</div></body></html>")
         return "".join(H)
 
     def write(self):
