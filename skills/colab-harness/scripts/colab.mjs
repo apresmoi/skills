@@ -203,7 +203,7 @@ const api = async (session, method, route, { json, body, headers = {}, raw = fal
     method, body: json !== undefined ? JSON.stringify(json) : body,
     headers: { authorization: `Bearer ${session.token}`, ...(json !== undefined ? { "content-type": "application/json" } : {}), ...headers },
   }).catch((e) => (soft ? null : die(`cannot reach ${session.url}: ${e.cause?.code ?? e.message}. Is the notebook still running?`, 1)));
-  if (soft && (!res || res.status >= 500)) return null;
+  if (soft && (!res || res.status >= 500 || res.status === 404)) return null;
   if (raw) return res;
   const text = await res.text();
   let data; try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 500) }; }
@@ -285,7 +285,7 @@ const superviseJob = async (session, kind, params, { outDir, all = false, opt = 
   const pollMs = Number(opt.poll ?? 20) * 1000;
   const keepMs = Number(opt["keep-every"] ?? 10) * 60 * 1000;
   const keepMinutes = Number(opt.minutes ?? 60);
-  const maxMisses = Number(opt.misses ?? 3);
+  const maxMisses = Number(opt.misses ?? 6);          // a quick tunnel drops for a minute at a time
   const maxRestarts = Number(opt.restarts ?? 3);
   const resumeEnv = opt["resume-env"] ? Object.fromEntries(String(opt["resume-env"]).split(",").map((kv) => kv.split(/=(.*)/s).slice(0, 2))) : null;
   if (!resumeEnv) slog("no --resume-env: a restart would redo the whole job. Checkpoint your script and pass one.");
@@ -299,7 +299,28 @@ const superviseJob = async (session, kind, params, { outDir, all = false, opt = 
   }
   let job = await submit(session, kind, params);
   slog(`job ${job.id} submitted; polling every ${pollMs / 1000}s, lease +${keepMinutes} min every ${keepMs / 60000} min`);
-  let misses = 0, restarts = 0, lastKeep = Date.now(), lastStatus = "";
+
+  // Adopt a job already running on this runtime rather than starting a second one: two trainers on
+  // one GPU is worse than waiting. Returns the job id, or null.
+  const runningScript = async (sess) => {
+    const list = await api(sess, "GET", "/jobs", { soft: true });
+    const jobs = Array.isArray(list) ? list : list?.jobs ?? [];
+    const live = jobs.filter((j) => j.kind === kind && (j.status === "running" || j.status === "queued"));
+    return live.length ? live[live.length - 1].id : null;
+  };
+
+  // A dead tunnel and a dead runtime look identical from here. Ask the hub where the notebook is
+  // publishing now before assuming the VM is gone.
+  const rediscover = async () => {
+    if (await runCli(["connect"])) return false;
+    const fresh = await loadSession();
+    const probe = await api(fresh, "GET", "/health", { soft: true });
+    if (!probe) return false;
+    session = fresh;
+    return true;
+  };
+
+  let misses = 0, restarts = 0, rediscoveries = 0, lastKeep = Date.now(), lastStatus = "";
   for (;;) {
     const cur = await api(session, "GET", `/jobs/${job.id}`, { soft: true });
     if (cur) {
@@ -316,24 +337,44 @@ const superviseJob = async (session, kind, params, { outDir, all = false, opt = 
       }
     } else {
       misses++;
-      slog(`runtime not answering (${misses}/${maxMisses})`);
+      slog(`no answer (${misses}/${maxMisses})`);
       if (misses >= maxMisses) {
+        // 1. the tunnel may simply have been replaced — the VM and the job can both be fine
+        if (rediscoveries < maxRestarts * 2 && await rediscover()) {
+          rediscoveries++;
+          const adopted = await runningScript(session);
+          if (adopted) {
+            if (adopted !== job.id) slog(`re-attached to ${adopted} after the tunnel changed`);
+            job = { id: adopted };
+            misses = 0; lastStatus = ""; lastKeep = Date.now();
+            continue;
+          }
+          const again = await api(session, "GET", `/jobs/${job.id}`, { soft: true });
+          if (again) { slog("tunnel recovered; same job still there"); misses = 0; continue; }
+          slog("runtime answers but the job is gone");
+        }
+        // 2. genuinely gone: bring an equivalent machine back and resume
         if (restarts >= maxRestarts) die(`supervise: runtime lost and ${maxRestarts} restarts used; last job ${job.id}`, 1);
         restarts++;
-        slog(`runtime lost; restart ${restarts}/${maxRestarts}`);
-        // Same named session, so a supervised job on --session train never hijacks "default".
-        if (await runCli(["start", "--session", SESSION_NAME, ...(gpu ? ["--gpu", String(gpu)] : [])])) die("supervise: could not start a new runtime", 1);
-        if (await runCli(["connect", "--session", SESSION_NAME])) die("supervise: could not connect to the new runtime", 1);
+        slog(`restart ${restarts}/${maxRestarts}`);
+        if (await runCli(["start", ...(gpu ? ["--gpu", String(gpu)] : [])])) die("supervise: could not start a new runtime", 1);
+        if (await runCli(["connect"])) die("supervise: could not connect to the new runtime", 1);
         session = await loadSession();
-        if (params.upload_id && opt._file) params = { ...params, upload_id: await upload(session, opt._file) };
-        if (resumeEnv) params = { ...params, env: { ...(params.env ?? {}), ...resumeEnv } };
-        await api(session, "POST", "/lease", { json: { minutes: keepMinutes }, soft: true });
-        job = await submit(session, kind, params);
+        const already = await runningScript(session);
+        if (already) {
+          slog(`a ${kind} job is already running there (${already}); watching it instead of submitting another`);
+          job = { id: already };
+        } else {
+          if (params.upload_id && opt._file) params = { ...params, upload_id: await upload(session, opt._file) };
+          if (resumeEnv) params = { ...params, env: { ...(params.env ?? {}), ...resumeEnv } };
+          await api(session, "POST", "/lease", { json: { minutes: keepMinutes }, soft: true });
+          job = await submit(session, kind, params);
+          slog(`resubmitted as ${job.id}${resumeEnv ? " with resume env" : ""}`);
+        }
         lastKeep = Date.now(); misses = 0; lastStatus = "";
-        slog(`resubmitted as ${job.id}${resumeEnv ? " with resume env" : ""}`);
       }
     }
-    await sleep(pollMs);
+    await sleep(misses ? Math.min(pollMs * 2, 60000) : pollMs);   // back off while it is not answering
   }
 };
 

@@ -94,33 +94,53 @@ else:
 `),
   code(`#@title 4) Open the tunnel and print the connect line
 import re, subprocess, time
-tunnel_log = open("/content/cloudflared.log", "w")
-tunnel_proc = subprocess.Popen(["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{HARNESS_PORT}", "--no-autoupdate"], stdout=tunnel_log, stderr=subprocess.STDOUT)
-url = None
-for _ in range(60):
-    m = re.search(r"https://[a-z0-9-]+\\.trycloudflare\\.com", open("/content/cloudflared.log").read())
-    if m:
-        url = m.group(0); break
-    time.sleep(1)
+
+def open_tunnel():
+    """Start cloudflared and return (process, url). The quick tunnel dies on its own sometimes;
+    cell 5 watches this process and calls open_tunnel() again, so a dead tunnel is not a dead runtime."""
+    log_path = f"/content/cloudflared-{int(time.time())}.log"
+    log = open(log_path, "w")
+    proc = subprocess.Popen(["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{HARNESS_PORT}", "--no-autoupdate"],
+                            stdout=log, stderr=subprocess.STDOUT)
+    for _ in range(60):
+        m = re.search(r"https://[a-z0-9-]+\\.trycloudflare\\.com", open(log_path).read())
+        if m:
+            return proc, m.group(0)
+        time.sleep(1)
+    return proc, None
+
+tunnel_proc, url = open_tunnel()
 if not url:
-    raise SystemExit("no tunnel URL yet; see /content/cloudflared.log")
+    raise SystemExit("no tunnel URL yet; see /content/cloudflared-*.log")
 # Publish the URL to a private Hugging Face dataset repo (<user>/colab-harness-state) so the
 # local CLI can find it with a bare  node colab.mjs connect  and nobody copies URLs by hand.
 STATE_REPO, STATE_FILE = None, None
-try:
-    if env.get("HF_TOKEN"):
+
+def publish_url(u, note="runtime up"):
+    """Write the current URL to <user>/colab-harness-state and retire the previous record."""
+    global STATE_REPO, STATE_FILE
+    try:
+        if not env.get("HF_TOKEN"):
+            return
         from huggingface_hub import HfApi
         import json as _json
         _api = HfApi(token=env["HF_TOKEN"]); _me = _api.whoami()["name"]
         STATE_REPO = f"{_me}/colab-harness-state"
         _api.create_repo(STATE_REPO, repo_type="dataset", private=True, exist_ok=True)
         _gpu = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True).stdout.strip() or "cpu"
+        _old = STATE_FILE
         STATE_FILE = f"runtimes/{int(time.time())}.json"
-        _rec = {"url": url, "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "gpu": _gpu, "token_from_secret": TOKEN_FROM_SECRET}
-        _api.upload_file(path_or_fileobj=_json.dumps(_rec).encode(), path_in_repo=STATE_FILE, repo_id=STATE_REPO, repo_type="dataset", commit_message="runtime up")
-except Exception as _e:
-    STATE_REPO = None
-    print("could not publish the URL to Hugging Face (copy it by hand):", str(_e)[:160])
+        _rec = {"url": u, "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "gpu": _gpu, "token_from_secret": TOKEN_FROM_SECRET}
+        _api.upload_file(path_or_fileobj=_json.dumps(_rec).encode(), path_in_repo=STATE_FILE, repo_id=STATE_REPO,
+                         repo_type="dataset", commit_message=note)
+        if _old and _old != STATE_FILE:
+            try: _api.delete_file(_old, repo_id=STATE_REPO, repo_type="dataset", commit_message="stale tunnel retired")
+            except Exception: pass
+    except Exception as _e:
+        STATE_REPO = None
+        print("could not publish the URL to Hugging Face (copy it by hand):", str(_e)[:160])
+
+publish_url(url)
 print("\\nOn your machine:\\n")
 if STATE_REPO and TOKEN_FROM_SECRET:
     print(f"  node colab.mjs connect            # URL published to {STATE_REPO} (private); no copying needed")
@@ -138,8 +158,21 @@ import time, urllib.request, json
 def _get(path):
     req = urllib.request.Request(f"http://127.0.0.1:{HARNESS_PORT}{path}", headers={"Authorization": f"Bearer {HARNESS_TOKEN}"})
     return json.loads(urllib.request.urlopen(req, timeout=5).read())
+tunnel_restarts = 0
 while True:
     try:
+        # A dead quick tunnel is not a dead runtime: restart it and republish, or the VM keeps
+        # burning units while nothing can reach it (and a running job looks lost from outside).
+        if tunnel_proc.poll() is not None:
+            tunnel_restarts += 1
+            print(time.strftime("%H:%M:%S"), f"tunnel died (restart {tunnel_restarts}); reopening")
+            tunnel_proc, new_url = open_tunnel()
+            if new_url:
+                url = new_url
+                publish_url(url, note=f"tunnel restarted ({tunnel_restarts})")
+                print(time.strftime("%H:%M:%S"), "new url published:", url, "· reconnect locally with: node colab.mjs connect")
+            else:
+                print(time.strftime("%H:%M:%S"), "could not reopen the tunnel; see /content/cloudflared-*.log")
         h = _get("/health"); L = h["lease"]
         print(time.strftime("%H:%M:%S"), f"lease {L['expires_in_s']//60:>3} min · jobs {h['jobs']} · vllm {h['vllm']['model'] or '-'} · gpu {h['gpu'].get('memory_used','?')}")
         if L["should_shutdown"]:
@@ -155,7 +188,7 @@ while True:
             break
     except Exception as e:
         print(time.strftime("%H:%M:%S"), "health check failed:", e)
-    time.sleep(60)
+    time.sleep(20)
 `),
 ];
 
