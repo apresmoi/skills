@@ -321,8 +321,9 @@ const superviseJob = async (session, kind, params, { outDir, all = false, opt = 
         if (restarts >= maxRestarts) die(`supervise: runtime lost and ${maxRestarts} restarts used; last job ${job.id}`, 1);
         restarts++;
         slog(`runtime lost; restart ${restarts}/${maxRestarts}`);
-        if (await runCli(["start", ...(gpu ? ["--gpu", String(gpu)] : [])])) die("supervise: could not start a new runtime", 1);
-        if (await runCli(["connect"])) die("supervise: could not connect to the new runtime", 1);
+        // Same named session, so a supervised job on --session train never hijacks "default".
+        if (await runCli(["start", "--session", SESSION_NAME, ...(gpu ? ["--gpu", String(gpu)] : [])])) die("supervise: could not start a new runtime", 1);
+        if (await runCli(["connect", "--session", SESSION_NAME])) die("supervise: could not connect to the new runtime", 1);
         session = await loadSession();
         if (params.upload_id && opt._file) params = { ...params, upload_id: await upload(session, opt._file) };
         if (resumeEnv) params = { ...params, env: { ...(params.env ?? {}), ...resumeEnv } };
