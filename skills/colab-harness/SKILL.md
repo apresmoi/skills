@@ -58,7 +58,7 @@ them. Each task below has one recipe; read only the one you need.
 | Something failed: every error text seen so far, its cause and fix | `recipes/troubleshooting.md` |
 | Transcribe, diarize, download from YouTube, the one-command pipeline | `recipes/transcribe-diarize.md` |
 | Serve a model with vLLM and use it from any OpenAI client | `recipes/vllm.md` |
-| Run a script on the VM: LoRA training, DSPy compile, anything; keep the result with `--push` (private HF repo); checkpoint/resume so a lost runtime costs minutes; the catalog of trained models (`models list/search/show`) | `recipes/train-and-scripts.md` |
+| Run a script on the VM: LoRA training, DSPy compile, anything; what a run must report (data ladder, validation curve, baselines, uncertainty); keep the result with `--push` (private HF repo); checkpoint/resume so a lost runtime costs minutes; the catalog of trained models (`models list/search/show`) | `recipes/train-and-scripts.md` |
 
 ## Hard rules for an agent
 
@@ -83,7 +83,13 @@ them. Each task below has one recipe; read only the one you need.
    and read; `status` and `job <id>` show state, `fetch` brings files back.
    For progress on running jobs use `progress` (chat-friendly lines with
    bars), `--follow` (stream one job's log), or `ui` (the VM's dashboard).
-5. **A long job must survive losing its runtime.** Colab can reclaim the VM
+5. **Training reports, not loss numbers.** Every fine-tune trains partially first — a
+   25/50/100% data ladder — and reports the validation curve, both baselines (untrained and
+   trivial), bootstrap intervals, a leakage check and its cost, via
+   `examples/train_report.py`. Without the ladder you cannot say whether more data would
+   help; without the curve you cannot say whether it overfitted; without intervals a
+   6-point gap on a small eval set looks like progress. `recipes/train-and-scripts.md`.
+6. **A long job must survive losing its runtime.** Colab can reclaim the VM
    mid-run whatever the lease says (seen: a 76-minute fine-tune killed at 46
    minutes, all of it lost). For anything over ~30 minutes, make the script
    checkpoint to a private hub repo and run it with `script … --supervise

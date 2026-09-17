@@ -348,7 +348,7 @@ const fetchFiles = async (session, job, outDir, { all = false } = {}) => {
   let skipped = 0;
   for (const name of job.files ?? []) {
     if (name.startsWith("input")) continue;
-    if (!all && /^checkpoint-\d+\//.test(name)) { skipped++; continue; }   // trainer checkpoints: big, --all to fetch
+    if (!all && /(^|\/)checkpoint-\d+\//.test(name)) { skipped++; continue; }   // trainer checkpoints anywhere (incl. stage-*/): big, --all to fetch
     // The quick tunnel occasionally stalls a download mid-body; bound each file and retry.
     const dest = path.join(outDir, name);
     await mkdir(path.dirname(dest), { recursive: true });

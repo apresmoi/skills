@@ -113,6 +113,39 @@ accuracy before and after, writes `compiled_program.json`, `summary.json`.
 Measured: 22 s on an L4 with 4 demos. Swap the signature, metric, and
 dataset for a real task; keep `dspy.LM("openai/<model>", api_base=VLLM_BASE_URL, api_key=HARNESS_TOKEN)`.
 
+## What a training run must report
+
+A loss that went down is not a result. Before a run counts, it has to answer: does more
+data still help, did it overfit, is it better than doing nothing clever, and is the number
+bigger than the noise. `examples/train_report.py` is a single stdlib-only file that collects
+these and writes `training-report.json` plus a readable `REPORT.md`; `examples/train_lora.py`
+shows it in use. Inline it when your job uploads only one script.
+
+- **Train partially, always — the data ladder.** Train a *fresh* adapter on 25%, 50% and 100%
+  of the data and score each on the same eval set. The shape is the answer to "should we label
+  more": still climbing, flattening, or already noise. Continuing one run instead of restarting
+  confounds more data with more steps, so each rung starts from the base model. Cost is roughly
+  1.75× a single run for three rungs — cheap next to a labelling budget.
+- **Score during training, not only at the end.** Validation every N steps gives the step where
+  it stopped improving; keep *that* checkpoint. A validation loss that turns up while the
+  training loss keeps falling is overfitting, and it is invisible in end-of-run numbers.
+- **Two baselines, every time.** The untrained model, and the trivial predictor (always the
+  commonest answer). A metric that does not clear both is not evidence of learning. In one
+  observed run the whole apparent gain was the base model failing to emit valid JSON at all.
+- **Uncertainty on every rate.** `bootstrap_ci` on the per-example results. On 15 examples the
+  95% interval is roughly ±0.2, so a 6-point difference is nothing; the report marks such gains
+  as `noise` instead of letting them look like progress.
+- **Separate format from content.** "Valid JSON" and "right answer" are different columns.
+  Formatting is the first thing fine-tuning fixes and the least interesting.
+- **Leakage check.** No id, and no near-duplicate prompt, shared between train and eval. For
+  data with time or grouping structure (conversations, users, sessions), split by the group and
+  keep a buffer around the boundary, or the eval is measuring memorisation.
+- **A ceiling, when the labels come from models or several annotators.** Their agreement with
+  each other is the highest score worth chasing; at the ceiling the student is finished.
+- **The cost of the run**, so the next curve can be priced against buying more labels.
+- **Score the sealed test once**, after the checkpoint is chosen on validation. Everything above
+  runs on train/val only.
+
 ## Surviving a lost runtime: checkpoint off the VM, resume on restart
 
 Nothing on the VM survives, and Colab can reclaim it mid-run, so a long job needs
