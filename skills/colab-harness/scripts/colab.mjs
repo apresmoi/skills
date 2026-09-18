@@ -18,6 +18,7 @@ const YT_COOKIES = path.join(HOME, "youtube-cookies.txt");   // seeded by the us
 //   --session train   or   COLAB_SESSION=train   (default: "default")
 const SESSIONS_DIR = path.join(HOME, "sessions");
 const sessionFile = (name) => path.join(SESSIONS_DIR, `${name}.json`);
+const lastStartFile = (name) => path.join(HOME, name === "default" ? "last-start.json" : `last-start-${name}.json`);
 const CHUNK = 8 * 1024 * 1024; // well under the tunnel's per-request cap
 
 const USAGE = `colab-harness — use a Colab GPU runtime from here.
@@ -386,6 +387,18 @@ const submit = (session, kind, params) => {
   return api(session, "POST", "/jobs", { body: form });
 };
 
+const FETCHED = path.join(HOME, "fetched-jobs.json");
+const markFetched = async (jobId, outDir) => {
+  let reg = {};
+  try { reg = JSON.parse(await readFile(FETCHED, "utf8")); } catch { /* first time */ }
+  reg[jobId] = { out: path.resolve(outDir), at: new Date().toISOString() };
+  await mkdir(HOME, { recursive: true, mode: 0o700 });
+  await writeFile(FETCHED, JSON.stringify(reg, null, 1) + "\n", { mode: 0o600 });
+};
+const wasFetched = async (jobId) => {
+  try { return Boolean(JSON.parse(await readFile(FETCHED, "utf8"))[jobId]); } catch { return false; }
+};
+
 const fetchFiles = async (session, job, outDir, { all = false } = {}) => {
   await mkdir(outDir, { recursive: true });
   let skipped = 0;
@@ -489,7 +502,7 @@ const main = async () => {
       // No URL given: first the one the local starter just brought up (last-start.json),
       // then the ones the notebook published to the hub, newest first, skipping ones
       // already bound to another session and retiring ones that no longer answer.
-      try { const rec = JSON.parse(await readFile(path.join(HOME, "last-start.json"), "utf8")); if (rec.url && await probe(rec.url, token)) { url = rec.url; console.error(`using the runtime started locally at ${rec.started} (${rec.gpu})`); } } catch { /* none */ }
+      try { const rec = JSON.parse(await readFile(lastStartFile(SESSION_NAME), "utf8")); if (rec.url && await probe(rec.url, token)) { url = rec.url; console.error(`using the runtime started locally at ${rec.started} (${rec.gpu})`); } } catch { /* none */ }
     }
     if (!url) {
       const d = await discoverRuntimes();
@@ -592,10 +605,11 @@ repeat steps 2 and 3.`); return;
     const { openSync } = await import("node:fs"); await mkdir(HOME, { recursive: true, mode: 0o700 });
     const logFile = path.join(HOME, "start.log"); const fd = openSync(logFile, "a");
     let ref = "main"; try { ref = execFileSync("git", ["ls-remote", "https://github.com/apresmoi/skills", "main"], { stdio: ["ignore", "pipe", "ignore"], timeout: 15000 }).toString().slice(0, 40); } catch { /* offline: branch */ }
-    const args = [path.join(SCRIPTS, "colab-start.mjs"), "start", "--gpu", opt.gpu ?? cfg.gpu ?? "L4", "--ref", ref, ...(opt.headed ? ["--headed"] : [])];
+    const args = [path.join(SCRIPTS, "colab-start.mjs"), "start", "--gpu", opt.gpu ?? cfg.gpu ?? "L4", "--ref", ref,
+                  "--session", SESSION_NAME, ...(opt.headed ? ["--headed"] : [])];
     const child = spawn(process.execPath, args, { detached: true, stdio: ["ignore", fd, fd] }); child.unref();
     console.error(`starting a ${opt.gpu ?? cfg.gpu ?? "L4"} runtime through playwright (pid ${child.pid}, log ${logFile}); waiting for the tunnel URL…`);
-    const t0 = Date.now(); const lastStart = path.join(HOME, "last-start.json"); let before = null; try { before = (await stat(lastStart)).mtimeMs; } catch { /* none */ }
+    const t0 = Date.now(); const lastStart = lastStartFile(SESSION_NAME); let before = null; try { before = (await stat(lastStart)).mtimeMs; } catch { /* none */ }
     while (Date.now() - t0 < 7 * 60 * 1000) {
       await new Promise((r) => setTimeout(r, 5000));
       try { const st = await stat(lastStart); if (st.mtimeMs !== before) { const rec = JSON.parse(await readFile(lastStart, "utf8")); console.log(`runtime up: ${rec.url}`); console.error("next: node colab.mjs connect"); return; } } catch { /* not yet */ }
@@ -630,7 +644,7 @@ repeat steps 2 and 3.`); return;
       for (const r of roots) { try { await stat(path.join(r, "node_modules", "playwright", "package.json")); pwRoot = r; break; } catch { /* next */ } }
       if (pwRoot) ok("playwright", `resolved from ${pwRoot}`); else miss("playwright", "no install found", `set PLAYWRIGHT_ROOT or add a project with node_modules/playwright to "playwright_roots" in ${CONFIG_FILE}`);
       let cookies = false; try { await stat(path.join(HOME, "google-cookies.txt")); cookies = true; } catch { /* none */ }
-      let held = false; try { const r = JSON.parse(await readFile(path.join(HOME, "last-start.json"), "utf8")); process.kill(r.pid, 0); held = true; } catch { /* not running */ }
+      let held = false; try { const r = JSON.parse(await readFile(lastStartFile(SESSION_NAME), "utf8")); process.kill(r.pid, 0); held = true; } catch { /* not running */ }
       if (!cookies) miss("google auth", "no ~/.colab-harness/google-cookies.txt", "send the user the steps from `node colab.mjs auth`, then they run `auth install`");
       else if (held) ok("google auth", "profile in use by the running runtime's tab (signed in)");
       else if (pwRoot) { const st = await new Promise((r) => execFile(process.execPath, [path.join(SCRIPTS, "colab-start.mjs"), "status"], { timeout: 90000 }, (e, out) => r((out || "").trim() || "status check failed"))); if (/^signed in/.test(st)) ok("google auth", st.replace(/\s+/g, " ")); else miss("google auth", st.replace(/\s+/g, " "), "re-export from google.com and `node colab.mjs auth install` (recipes/setup-starter.md)"); }
@@ -753,6 +767,21 @@ repeat steps 2 and 3.`); return;
     return;
   }
   if (cmd === "release") {
+    // Nothing on the VM survives release. Collect finished work before pulling the plug;
+    // --force skips this (and loses whatever has not been fetched).
+    if (!("force" in opt)) {
+      const list = await api(session, "GET", "/jobs", { soft: true });
+      const jobs = (Array.isArray(list) ? list : list?.jobs ?? []).filter((j) => j.status === "done" || j.status === "failed");
+      for (const j of jobs) {
+        if (!(j.files ?? []).length || await wasFetched(j.id)) continue;
+        const dir = opt.out ? path.join(opt.out, j.id) : path.join("colab-jobs", j.id);
+        console.error(`release: job ${j.id} has ${j.files.length} uncollected file(s) → fetching into ${dir}`);
+        const full = await api(session, "GET", `/jobs/${j.id}`, { soft: true });
+        if (full) await fetchFiles(session, full, dir, { all: "all" in opt });
+      }
+      const running = (Array.isArray(list) ? list : list?.jobs ?? []).filter((j) => j.status === "running" || j.status === "queued");
+      if (running.length) die(`release: ${running.length} job(s) still running (${running.map((j) => j.id).join(", ")}). Wait, or pass --force to discard them.`, 1);
+    }
     const h = await api(session, "GET", "/health");
     const e = await touchLedger(session, h);
     const L = await api(session, "POST", "/shutdown", { json: { stop_vllm: true } });

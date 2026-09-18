@@ -18,6 +18,7 @@
 // node_modules, or any project listed in ~/.colab-harness/config.json "playwright_roots");
 // nothing is downloaded. Uses the installed Google Chrome (channel "chrome").
 import { mkdir, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -25,7 +26,16 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const HOME = process.env.COLAB_HARNESS_HOME ?? path.join(homedir(), ".colab-harness");
-const PROFILE = path.join(HOME, "chrome");
+const BASE_PROFILE = path.join(HOME, "chrome");
+// One Chrome profile can host one browser at a time, so a second concurrent runtime needs its own.
+// Non-default sessions get a clone of the signed-in profile: parallel starts, one Google login.
+const SESSION_NAME = (() => {
+  const i = process.argv.indexOf("--session");
+  return i > 0 && process.argv[i + 1] ? process.argv[i + 1] : (process.env.COLAB_SESSION || "default");
+})();
+const PROFILE = SESSION_NAME === "default" ? BASE_PROFILE : path.join(HOME, `chrome-${SESSION_NAME}`);
+// Per-session record, so two parallel starts do not overwrite each other's URL.
+const LAST_START = SESSION_NAME === "default" ? "last-start.json" : `last-start-${SESSION_NAME}.json`;
 const COOKIES = path.join(HOME, "google-cookies.txt");   // seeded by the user via `colab.mjs auth install`; never printed
 const CONFIG = path.join(HOME, "config.json");
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -66,8 +76,26 @@ async function clearStaleProfileLock() {
   log(`cleared a stale profile lock (pid ${pid || "unknown"} is gone)`);
 }
 
+async function cloneProfileIfNeeded() {
+  if (PROFILE === BASE_PROFILE) return;
+  const have = await stat(path.join(PROFILE, "Default")).then(() => true).catch(() => false);
+  if (have) return;
+  const from = await stat(path.join(BASE_PROFILE, "Default")).then(() => true).catch(() => false);
+  if (!from) return;                       // no signed-in profile yet: the usual auth path will complain
+  log(`cloning the signed-in profile for session "${SESSION_NAME}"`);
+  await mkdir(PROFILE, { recursive: true, mode: 0o700 });
+  // Singleton* are per-running-browser; copying them would recreate the very lock we avoid.
+  await new Promise((res, rej) => {
+    const sh = spawn("/bin/sh", ["-c",
+      `cd ${JSON.stringify(BASE_PROFILE)} && tar cf - --exclude='Singleton*' --exclude='*/Cache/*' . | (cd ${JSON.stringify(PROFILE)} && tar xf -)`],
+      { stdio: "ignore" });
+    sh.on("exit", (c) => (c === 0 ? res() : rej(new Error(`profile clone failed (${c})`))));
+  });
+}
+
 async function launch(pw, headed) {
   await mkdir(PROFILE, { recursive: true, mode: 0o700 });
+  await cloneProfileIfNeeded();
   await clearStaleProfileLock();
   return pw.chromium.launchPersistentContext(PROFILE, {
     channel: "chrome", headless: !headed, viewport: { width: 1440, height: 900 },
@@ -228,7 +256,7 @@ async function main() {
     await page.waitForTimeout(1500); await dismissDialogs(page); log("Run all sent");
     const url = await waitForTunnel(page);
     log("tunnel up");
-    await writeFile(path.join(HOME, "last-start.json"), JSON.stringify({ url, gpu: GPU, started: new Date().toISOString(), pid: process.pid }, null, 2) + "\n", { mode: 0o600 });
+    await writeFile(path.join(HOME, LAST_START), JSON.stringify({ url, gpu: GPU, started: new Date().toISOString(), pid: process.pid }, null, 2) + "\n", { mode: 0o600 });
     console.log(url);
     if (!opt["no-wait"]) {
       // The tab must stay open: the notebook's last cell is the lease watchdog.

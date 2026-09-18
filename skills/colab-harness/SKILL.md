@@ -79,17 +79,20 @@ them. Each task below has one recipe; read only the one you need.
    30 idle minutes as the backstop.
 3. **Do not run a GPU job while vLLM holds the GPU.** vLLM reserves 90% of
    memory; stop it before training or diarizing, or run them first.
-4. **Verify outputs, not exits.** A job is done when its files are fetched
+4. **Collect before you stop.** `release` drains finished jobs it has not fetched and
+   refuses while one is running; an idle-release watchdog must also hold while a transfer
+   is in flight. The VM's disk is gone the moment it unassigns.
+5. **Verify outputs, not exits.** A job is done when its files are fetched
    and read; `status` and `job <id>` show state, `fetch` brings files back.
    For progress on running jobs use `progress` (chat-friendly lines with
    bars), `--follow` (stream one job's log), or `ui` (the VM's dashboard).
-5. **Training reports, not loss numbers.** Every fine-tune trains partially first — a
+6. **Training reports, not loss numbers.** Every fine-tune trains partially first — a
    25/50/100% data ladder — and reports the validation curve, both baselines (untrained and
    trivial), bootstrap intervals, a leakage check and its cost, via
    `examples/train_report.py`. Without the ladder you cannot say whether more data would
    help; without the curve you cannot say whether it overfitted; without intervals a
    6-point gap on a small eval set looks like progress. `recipes/train-and-scripts.md`.
-6. **A long job must survive losing its runtime.** Colab can reclaim the VM
+7. **A long job must survive losing its runtime.** Colab can reclaim the VM
    mid-run whatever the lease says (seen: a 76-minute fine-tune killed at 46
    minutes, all of it lost). For anything over ~30 minutes, make the script
    checkpoint to a private hub repo and run it with `script … --supervise

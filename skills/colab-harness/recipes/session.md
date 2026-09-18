@@ -39,8 +39,14 @@ bills about 1.54 compute units per hour (L4 High-RAM, measured).
   the lease to 30 minutes; polling (`status`, `job`) does not. When the
   lease expires with no job running, the watchdog unassigns the runtime.
 - `node colab.mjs keep --minutes 120` for long unattended work.
-- `node colab.mjs release` stops vLLM and unassigns the runtime within a
+- `node colab.mjs release` **drains, then stops**: any finished job whose files were
+  never fetched is collected first (into `colab-jobs/<id>`, or `--out DIR/<id>`), and a
+  release is refused outright while a job is still running or queued. `--force` skips both
+  and discards whatever is on the VM. Then it stops vLLM and unassigns the runtime within a
   minute. Confirm: `status` fails, the tunnel returns 530.
+  This exists because "no jobs running" is not "safe to stop": a completed job can still be
+  transferring, and everything on the VM disk dies with it. Observed once — a release fired
+  between a job finishing and its adapter finishing its download.
 - **Agent rule:** while a runtime is up, schedule a session-local check
   every ~10 minutes that runs `node colab.mjs sessions`, reports lease and
   jobs, and releases when nothing is pending. Delete the check once the
