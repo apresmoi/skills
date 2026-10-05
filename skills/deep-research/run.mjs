@@ -46,11 +46,24 @@ const SITES = {
     // Extra High — "Pro Extended" is a regular-chat tier and isn't offered, so
     // requesting it silently lands on Extra High. Extra High IS the top
     // deep-research tier, so default to it (verification then confirms cleanly).
-    defaultModel: 'Extra High',           // composer pill effort, deep-research mode
+    // 2026-10-05 UI: the pill is "Select ChatGPT model" and shows the model
+    // ("Pro"); effort is a slider inside its menu, read back from
+    // data-selected-reasoning-effort. The old Instant..Extra High ladder is gone.
+    defaultModel: 'Pro',
     setModel: async (page, label) => {
-      const pill = page.locator('button.__composer-pill').first();
+      const pill = page.locator('button.__composer-pill, button[aria-label="Select ChatGPT model"]').first();
       if (!(await pill.isVisible().catch(() => false))) return false;
-      if ((await pill.innerText().catch(() => '')).includes(label)) return true;
+      if ((await pill.innerText().catch(() => '')).includes(label)) {
+        // Push the effort slider to its top before sending, and refuse
+        // anything but GPT-6 Pro or 5.6 Pro: the menu header reads "6 Pro".
+        await pill.click().catch(() => undefined); await page.waitForTimeout(800);
+        const header = (await page.locator('[data-model-picker-view-toggle]').first().innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+        if (!/^(?:GPT-)?(?:6|5\.6) Pro\b/i.test(header)) { await page.keyboard.press('Escape'); return false; }
+        const slider = page.locator('[data-reasoning-slider]').first();
+        if (await slider.isVisible().catch(() => false)) { await slider.focus().catch(() => undefined); await page.keyboard.press('End'); await page.waitForTimeout(500); }
+        await page.keyboard.press('Escape'); await page.waitForTimeout(400);
+        return true;
+      }
       await pill.click(); await page.waitForTimeout(800);
       const item = page.getByRole('menuitemradio', { name: new RegExp(`^${label}$`, 'i') })
         .or(page.getByRole('menuitem', { name: new RegExp(`^${label}$`, 'i') }))
@@ -64,10 +77,11 @@ const SITES = {
     // Force Chat, and refuse to run at all if that cannot be confirmed —
     // sending a research prompt into Work silently is worse than not sending it.
     ensureChatMode: async (page) => {
-      const chat = page.locator('[data-tpp-toggle-value="chatgpt"]').first();
-      const work = page.locator('[data-tpp-toggle-value="work"]').first();
+      const chat = page.locator('[data-tpp-toggle-value="chatgpt"], button[aria-pressed]:text-is("Chat")').first();
+      const work = page.locator('[data-tpp-toggle-value="work"], button[aria-pressed]:text-is("Work")').first();
       const selected = async (el) =>
         (await el.getAttribute('aria-checked').catch(() => null)) === 'true' ||
+        (await el.getAttribute('aria-pressed').catch(() => null)) === 'true' ||
         (await el.getAttribute('data-state').catch(() => null)) === 'on';
 
       if (!(await chat.isVisible().catch(() => false))) {
@@ -88,21 +102,28 @@ const SITES = {
       // ChatGPT's + menu items are now plain buttons/labels (no role=menuitem),
       // grouped under "Add files and more". Match the "Deep research" label by text,
       // falling back to a "More"/"Tools" submenu if it's nested there.
-      const drItem = () => page.getByText(/^deep research$/i).first();
-      const plus = page.locator('[data-testid="composer-plus-btn"]').first();
+      // Scoped away from <nav>: a sidebar PROJECT named "Deep research" matched
+      // the bare text and was clicked instead of the menu item (2026-10-05).
+      const drItem = () => page.locator('button:not(nav button), [role^="menuitem"]').filter({ hasText: /^deep research/i }).first();
+      const plus = page.locator('[data-testid="composer-plus-btn"], button[aria-label="Add files and more"]').first();
       await plus.click(); await page.waitForTimeout(900);
       if (!(await drItem().isVisible().catch(() => false))) {
         const more = page.getByText(/^(more|tools)$/i).first();
         if (await more.isVisible().catch(() => false)) { await more.hover(); await page.waitForTimeout(700); }
       }
       const dr = drItem();
-      if (await dr.isVisible().catch(() => false)) { await dr.click(); await page.waitForTimeout(700); return true; }
+      if (await dr.isVisible().catch(() => false)) {
+        await dr.click(); await page.waitForTimeout(900);
+        // Ground truth: the composer shows a "Deep research" chip once enabled.
+        return await page.locator('form').filter({ hasText: /deep research/i }).first().isVisible().catch(() => false);
+      }
       await page.keyboard.press('Escape'); return false;
     },
-    sendSel: '[data-testid="send-button"]',
-    streamingSel: '[data-testid="stop-button"]',
+    // 2026-10-05: the send button lost data-testid and is now aria-label "Send".
+    sendSel: '[data-testid="send-button"], button[aria-label="Send prompt"], button[aria-label="Send"]',
+    streamingSel: '[data-testid="stop-button"], button[aria-label="Stop streaming"], button[aria-label="Stop generating"]',
     assistantSel: '[data-message-author-role="assistant"]',
-    healthPill: () => 'button.__composer-pill',
+    healthPill: () => 'button.__composer-pill, button[aria-label="Select ChatGPT model"]',
   },
   grok: {
     // Root chat by default; runs then move into a Project (found or created
@@ -391,6 +412,14 @@ if (COMPOSE) {
     }
     log(`✓ Chat mode: ${mode.why}.`);
   }
+  // ChatGPT restores an unsent draft into the composer; on 2026-10-05 a test
+  // prompt went out glued to the previous run's leftover text. Clear it BEFORE
+  // enabling Deep research, whose chip lives inside the composer.
+  if (SITE_KEY === 'chatgpt') {
+    await composer.click().catch(() => undefined);
+    await page.keyboard.press('ControlOrMeta+A'); await page.keyboard.press('Backspace');
+    await page.waitForTimeout(400);
+  }
   researchOn = await site.enableResearch(page);
   if (SITE_KEY === 'chatgpt') log(researchOn ? '✓ Deep research enabled.' : '⚠ Could not auto-enable Deep research.');
 }
@@ -401,7 +430,8 @@ if (!COMPOSE || EXPLICIT_MODEL) {
   // Re-read the pill after selecting — ground truth, not an assumption.
   const pillAfter = (await page.locator(site.healthPill()).first().innerText().catch(() => '')).replace(/\n/g, ' ').trim();
   const applied = pillAfter.toLowerCase().includes(MODEL.toLowerCase());
-  log(`${applied ? '✓' : '⚠'} Model/effort: requested "${MODEL}" · pill now shows "${pillAfter}"${applied ? '' : ' — NOT applied, fix before relying on output'}`);
+  const effort = await page.locator(site.healthPill()).first().getAttribute('data-selected-reasoning-effort').catch(() => null);
+  log(`${applied ? '✓' : '⚠'} Model/effort: requested "${MODEL}" · pill now shows "${pillAfter}"${effort ? ` · reasoning effort "${effort}"` : ''}${applied ? '' : ' — NOT applied, fix before relying on output'}`);
   if (!applied) {
     await page.screenshot({ path: `/tmp/${SITE_KEY}-research-model-failed.png` });
     await context.close();
@@ -417,6 +447,17 @@ await dismissOverlays();  // re-check: the modal can pop after model selection
 await composer.click();
 await page.keyboard.insertText(prompt);
 log(`Prompt filled (${prompt.length} chars).`);
+if (SITE_KEY === 'chatgpt') {
+  // Refuse to send anything but this run's prompt (plus the Deep research chip).
+  const filled = ((await composer.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+  const expected = prompt.replace(/\s+/g, ' ').trim();
+  const extra = filled.replace(expected, '').replace(/deep research/i, '').trim();
+  if (!filled.includes(expected.slice(0, 200)) || extra.length > 40) {
+    await page.screenshot({ path: `/tmp/${SITE_KEY}-research-composer-dirty.png` });
+    await context.close();
+    throw new Error(`Refusing to send: the composer holds text beyond this prompt (${extra.length} extra chars).`);
+  }
+}
 
 if (!researchOn || NO_SEND) {
   await waitForEnter(
@@ -427,8 +468,21 @@ if (!researchOn || NO_SEND) {
   log('Sending in 8s — Ctrl+C to abort, or send in the browser yourself.');
   await page.waitForTimeout(8_000);
   const send = page.locator(site.sendSel).first();
-  if (await send.isEnabled().catch(() => false)) await send.click();
-  log('Sent.');
+  if (await send.isEnabled().catch(() => false)) await send.click().catch(() => undefined);
+  // "Sent." used to be logged unconditionally: on 2026-10-05 the send button's
+  // selector had gone stale, nothing was clicked, and the run idled 40 min.
+  // A ChatGPT send is proven by the page moving to its new /c/<id> thread.
+  if (SITE_KEY === 'chatgpt') {
+    const moved = () => page.waitForURL(/\/c\/[0-9a-f-]{36}/, { timeout: 30_000 }).then(() => true).catch(() => false);
+    let ok = await moved();
+    if (!ok) { await composer.click().catch(() => undefined); await page.keyboard.press('Enter'); ok = await moved(); }
+    if (!ok) {
+      await page.screenshot({ path: `/tmp/${SITE_KEY}-research-send-failed.png` });
+      await context.close();
+      throw new Error('Refusing to wait: the prompt was not sent (no conversation was created).');
+    }
+    log(`Sent → ${page.url()}`);
+  } else log('Sent.');
 }
 
 // ---------- wait for the report ----------
@@ -448,35 +502,136 @@ const isStreaming = async () =>
 // as a [data-message-author-role="assistant"] turn. So the assistant selector
 // reads empty for the whole run. Read the report frame directly instead.
 const CHATGPT_DR = SITE_KEY === 'chatgpt' && !COMPOSE;
-async function chatgptReport() {
-  const frames = page.frames().filter((f) => f !== page.mainFrame());
-  let chosen = null, ci = null;
-  for (const f of frames) {
-    let info;
-    try {
-      info = await f.evaluate(() => {
-        const t = (document.body && document.body.innerText) || '';
-        return {
-          len: t.length,
-          done: /Research completed in/i.test(t),
-          working: /\d[\d,]*\s+searches|Researching|Reading|Thinking|Deciding|Browsing|Searching|Seeking|Synthesi/i.test(t),
-        };
-      });
-    } catch { continue; }
-    if (!info.len) continue;
-    if (!chosen || (info.done && !ci.done) || (info.done === ci.done && info.len > ci.len)) { chosen = f; ci = info; }
+// The conversation JSON is the ground truth. On 2026-10-05 ChatGPT's thread DOM
+// stopped carrying [data-message-author-role] and conversation-turn test ids,
+// so DOM scraping read nothing. Read the backend conversation the page itself
+// renders: the current turn is everything after the last user message, and
+// the report is its final assistant text message (end_turn === true).
+// Citation markers (\ue200cite…\ue201) are replaced by each reference's `alt`,
+// which is markdown carrying the real URL.
+async function chatgptApiReport(capturePage = page) {
+  const id = (capturePage.url().match(/\/c\/([0-9a-f-]{36})/) || [])[1];
+  if (!id) return null;
+  return await capturePage.evaluate(async (conversationId) => {
+    const session = await (await fetch('/api/auth/session')).json();
+    const response = await fetch(`/backend-api/conversation/${conversationId}`, { headers: { Authorization: `Bearer ${session.accessToken}` } });
+    if (!response.ok) return { error: `conversation ${response.status}` };
+    const json = await response.json();
+    const chain = [];
+    for (let node = json.current_node; node && json.mapping[node]; node = json.mapping[node].parent) chain.unshift(json.mapping[node]);
+    const lastUser = chain.map((n) => n.message?.author?.role).lastIndexOf('user');
+    const turn = chain.slice(lastUser + 1).map((n) => n.message).filter(Boolean);
+    const render = (m) => {
+      let t = (m.content?.parts || []).filter((x) => typeof x === 'string').join('\n');
+      const refs = [...(m.metadata?.content_references || [])].filter((r) => r.matched_text).sort((a, b) => (b.start_idx ?? 0) - (a.start_idx ?? 0));
+      for (const r of refs) t = t.split(r.matched_text).join(r.alt ? ` ${r.alt}` : '');
+      return t.replace(/\ue200[^\ue201]*\ue201/g, '').trim();
+    };
+    const texts = turn.filter((m) => m.author?.role === 'assistant' && m.content?.content_type === 'text' && (m.recipient ?? 'all') === 'all');
+    const final = [...texts].reverse().find((m) => m.end_turn === true);
+    const latest = turn.at(-1);
+    const links = [];
+    for (const m of texts) for (const r of m.metadata?.content_references || []) {
+      for (const u of r.safe_urls || []) links.push(u);
+      for (const hit of String(r.alt || '').matchAll(/\((https?:[^)\s]+)\)/g)) links.push(hit[1]);
+    }
+    const text = final ? render(final) : texts.length ? render(texts.at(-1)) : '';
+    const done = !!final && final.status === 'finished_successfully';
+    const working = !done && turn.length > 0 && (latest?.status === 'in_progress' || latest?.end_turn !== true || !!json.async_status);
+    return { text, links, done, working, model: final?.metadata?.resolved_model_slug || texts.at(-1)?.metadata?.resolved_model_slug || '', raw: JSON.stringify(json).length };
+  }, id).catch((error) => ({ error: String(error) }));
+}
+async function chatgptReport(capturePage = page)                          {
+  const empty = { text: '', html: '', links: []            , done: false, working: false };
+  const api = await chatgptApiReport(capturePage);
+  let apiShort = null;
+  if (api && !api.error && (api.text || api.working)) {
+    const links = [...new Set(api.links)].filter((url) => { try { return !/(?:^|\.)(?:chatgpt\.com|oaiusercontent\.com)$/.test(new URL(url).hostname); } catch { return false; } });
+    // A short "done" turn is an acknowledgement or a question; the Deep
+    // research app may still be writing its report in a widget frame below.
+    if (api.done && api.text && api.text.length >= MIN_REPORT_CHARS) return { text: api.text, html: '', links, done: true, working: false, model: api.model };
+    if (api.done && api.text) apiShort = { text: api.text, html: '', links, done: true, working: false, model: api.model };
+    if (api.working || (api.text && !api.done)) return { text: api.text, html: '', links, done: false, working: true, model: api.model };
   }
-  if (!chosen) return { text: '', links: [], done: false, working: false };
-  const data = await chosen.evaluate(() => {
-    let t = (document.body && document.body.innerText) || '';
-    t = t.replace(/(?:\n\s*[0-9]){8,}/g, '');            // drop the animated digit-roll counter
-    t = t.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
-    const urls = [...new Set((t.match(/https?:\/\/[^\s)\]]+/g) || [])
-      .map((u) => u.replace(/[).,\];:'"]+$/, '').replace(/\?utm_source=chatgpt\.com/, '')))]
-      .filter((u) => !/openai\.com|oaiusercontent|chatgpt\.com/.test(u));
-    return { text: t, urls };
+  const main = await capturePage.evaluate(() => {
+    const turns = Array.from(document.querySelectorAll('[data-testid^="conversation-turn-"]'));
+    const turn = turns.at(-1);
+    const pendingUser = turn?.getAttribute('data-turn') === 'user';
+    const messages = turn?.querySelectorAll             ('[data-message-author-role="assistant"]');
+    const message = messages?.[messages.length - 1];
+    const stop = Array.from(document.querySelectorAll             (
+      '[data-testid="stop-button"], button[aria-label="Stop streaming"], button[aria-label="Stop generating"]'
+    )).some(button => button.getClientRects().length > 0);
+    const complete = !!turn?.querySelector('button[data-testid="copy-turn-action-button"]');
+    // innerText drops citation hrefs. Expand each real anchor in a disposable
+    // off-screen clone so a per-story split retains its own source linkage.
+    let text = message?.innerText ?? '';
+    if (message && complete && !stop) {
+      const clone = message.cloneNode(true)               ;
+      const original = Array.from(message.querySelectorAll                   ('a[href^="http"]'));
+      Array.from(clone.querySelectorAll                   ('a[href^="http"]')).forEach((anchor, i) => {
+        const label = original[i].innerText.trim();
+        anchor.textContent = `${label} (${anchor.href})`;
+      });
+      const container = document.createElement('div');
+      container.style.cssText = 'position:fixed;left:-100000px;top:0;width:1440px;opacity:0;pointer-events:none';
+      container.appendChild(clone);
+      document.body.appendChild(container);
+      try { text = clone.innerText; } finally { container.remove(); }
+    }
+    return {
+      text, html: message?.innerHTML ?? '', 
+      links: Array.from(message?.querySelectorAll                   ('a[href^="http"]') ?? [])
+        .map(anchor => anchor.href),
+      done: !!message && complete && !stop,
+      working: stop, pendingUser, hasFrame: !!turn?.querySelector('iframe'),
+    };
+  }).catch(() => null);
+  const sourceLinks = (links          ) => [...new Set(links)].filter(url => {
+    try {
+      const host = new URL(url).hostname;
+      return !/(?:^|\.)(?:chatgpt\.com|oaiusercontent\.com)$/.test(host);
+    } catch { return false; }
   });
-  return { text: data.text, links: data.urls, done: ci.done, working: ci.working };
+  if (main?.pendingUser) return { ...empty, working: main.working };
+  if (main?.working) return { text: main.text, html: main.html,
+    links: sourceLinks(main.links), done: false, working: true };
+
+  let candidate                        = null;
+  for (const frame of capturePage.frames().filter(frame => frame !== capturePage.mainFrame())) {
+    // Previous turns may retain completed research frames. Only the latest
+    // turn's own frame can answer the current prompt.
+    const current = await frame.frameElement().then(element => element.evaluate(node => {
+      const turns = Array.from(document.querySelectorAll('[data-testid^="conversation-turn-"]'));
+      return turns.length === 0 || !!turns.at(-1)?.contains(node);
+    })).catch(() => false);
+    if (!current) continue;
+    const report = await frame.evaluate(() => {
+      const raw = document.body?.innerText ?? '';
+      const text = raw.replace(/(?:\n\s*[0-9]){8,}/g, '')
+        .replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+      const anchors = Array.from(document.querySelectorAll                   ('a[href^="http"]'))
+        .map(anchor => anchor.href);
+      const bare = (text.match(/https?:\/\/[^\s)\]]+/g) ?? [])
+        .map(url => url.replace(/[).,\];:'"]+$/, ''));
+      return {
+        text, html: document.body?.innerHTML ?? '', links: [...anchors, ...bare],
+        done: /Research completed in/i.test(raw),
+        working: /\d[\d,]*\s+searches|Researching|Reading|Thinking|Deciding|Browsing|Searching|Seeking|Synthesi/i.test(raw),
+      };
+    }).catch(() => null);
+    if (!report?.text) continue;
+    if (!candidate || (report.done && !candidate.done) ||
+      (report.done === candidate.done && report.text.length > candidate.text.length)) candidate = report;
+  }
+  if (candidate && (!apiShort || candidate.text.length > apiShort.text.length)) return { ...candidate, links: sourceLinks(candidate.links) };
+  if (apiShort) return apiShort;
+  if (main) {
+    const links = sourceLinks(main.links);
+    const done = main.done && !main.hasFrame && main.text.trim().length >= 2500 && links.length > 0;
+    return { text: main.text.trim(), html: main.html, links, done, working: main.working };
+  }
+  return empty;
 }
 // Best-effort: if a deep-research plan/confirm form appears (the one you must
 // accept), click its start button in whichever frame holds it.
@@ -526,7 +681,7 @@ while (Date.now() < deadline) {
   // ChatGPT: a clarifying question can land in the MAIN thread before research
   // starts — auto-answer it so the run proceeds unattended (headless).
   if (CHATGPT_DR && !warnedClarify && !done && !streaming) {
-    const mainQ = await lastAssistantText();
+    const mainQ = (await chatgptApiReport())?.text || await lastAssistantText();
     if (mainQ && mainQ.length < 1500 && /\?\s*$/.test(mainQ.trim().slice(-200))) {
       warnedClarify = true;
       log('→ ChatGPT asked a clarifying question — auto-answering to proceed.');
@@ -537,6 +692,15 @@ while (Date.now() < deadline) {
     }
   }
 
+  if (CHATGPT_DR && done && !warnedClarify && text.length < 1500 && /\?\s*$/.test(text.trim().slice(-200))) {
+    warnedClarify = true;
+    log(`→ ChatGPT asked a clarifying question — auto-answering. sample=${JSON.stringify(text.replace(/\s+/g, ' ').slice(0, 300))}`);
+    await composer.click().catch(() => {});
+    await page.keyboard.insertText('Use reasonable defaults and proceed with the research now. No further clarification needed.');
+    const s3 = page.locator(site.sendSel).first();
+    if (await s3.isEnabled().catch(() => false)) await s3.click().catch(() => {}); else await page.keyboard.press('Enter');
+    continue;
+  }
   if (CHATGPT_DR) {
     if (done && text.length >= MIN_REPORT_CHARS && stableFor >= 15) { finalText = text; break; }
   } else {
@@ -566,6 +730,7 @@ if (CHATGPT_DR) {
   const r = await chatgptReport();
   if (r.text && r.text.length > finalText.length) finalText = r.text;
   links = r.links;
+  html = r.html || '';
 } else {
   const msg = page.locator(site.assistantSel).last();
   html = await msg.innerHTML().catch(() => '');
