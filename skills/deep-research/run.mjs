@@ -19,7 +19,7 @@
 
 import { createRequire } from 'node:module';
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
-import { dirname, resolve, join } from 'node:path';
+import { dirname, resolve, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline';
 
@@ -60,11 +60,30 @@ const SITES = {
         const header = (await page.locator('[data-model-picker-view-toggle]').first().innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
         if (!/^(?:GPT-)?(?:6|5\.6) Pro\b/i.test(header)) { await page.keyboard.press('Escape'); return false; }
         const slider = page.locator('[data-reasoning-slider]').first();
-        if (await slider.isVisible().catch(() => false)) { await slider.focus().catch(() => undefined); await page.keyboard.press('End'); await page.waitForTimeout(500); }
+        if (await slider.isVisible().catch(() => false)) { await slider.hover().catch(() => undefined); await slider.focus().catch(() => undefined); for (let k = 0; k < 4; k++) { await page.keyboard.press('ArrowRight'); await page.waitForTimeout(250); } }
         await page.keyboard.press('Escape'); await page.waitForTimeout(400);
         return true;
       }
       await pill.click(); await page.waitForTimeout(800);
+      // 2026-10-05: with Deep research on, the pill opens a 5-step "Thinking effort"
+      // slider (Instant … 6 Pro). End does nothing; ArrowRight on the hovered slider
+      // row moves it. Max step reads "6 Pro" in the header and "Pro" on the pill.
+      const effortSlider = page.locator('[data-reasoning-slider]').first();
+      if (/pro/i.test(label) && await effortSlider.isVisible().catch(() => false)) {
+        await effortSlider.hover().catch(() => undefined); await effortSlider.focus().catch(() => undefined);
+        for (let k = 0; k < 4; k++) { await page.keyboard.press('ArrowRight'); await page.waitForTimeout(250); }
+        const hdr = (await page.locator('[data-model-picker-view-toggle]').first().innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+        await page.keyboard.press('Escape'); await page.waitForTimeout(400);
+        return /^(?:GPT-)?(?:6|5\.6) Pro\b/i.test(hdr);
+      }
+      // "Instant" is the slider's bottom step: the fastest model, for checks
+      // that only need an answer, not research.
+      if (/^instant$/i.test(label) && await effortSlider.isVisible().catch(() => false)) {
+        await effortSlider.hover().catch(() => undefined); await effortSlider.focus().catch(() => undefined);
+        for (let k = 0; k < 4; k++) { await page.keyboard.press('ArrowLeft'); await page.waitForTimeout(250); }
+        await page.keyboard.press('Escape'); await page.waitForTimeout(400);
+        return true;
+      }
       const item = page.getByRole('menuitemradio', { name: new RegExp(`^${label}$`, 'i') })
         .or(page.getByRole('menuitem', { name: new RegExp(`^${label}$`, 'i') }))
         .or(page.getByText(new RegExp(`^${label}$`, 'i'))).first();
@@ -104,7 +123,16 @@ const SITES = {
       // falling back to a "More"/"Tools" submenu if it's nested there.
       // Scoped away from <nav>: a sidebar PROJECT named "Deep research" matched
       // the bare text and was clicked instead of the menu item (2026-10-05).
-      const drItem = () => page.locator('button:not(nav button), [role^="menuitem"]').filter({ hasText: /^deep research/i }).first();
+      // 2026-10-05 (later): rows are plain divs ("Deep research · Get a detailed
+      // report"), so also match the row by its unique subtitle.
+      // .or().first() is DOM order, and the project page's <h1><button>Deep research</button>
+      // (the project title) comes first — so try the subtitle row before the label match.
+      const drItem = () => {
+        const bySubtitle = page.getByText('Get a detailed report', { exact: true }).first();
+        const byLabel = page.locator('button:not(nav button):not(h1 button), [role^="menuitem"]').filter({ hasText: /^deep research/i }).first();
+        return { isVisible: async () => (await bySubtitle.isVisible().catch(() => false)) || byLabel.isVisible(),
+                 click: async () => (await bySubtitle.isVisible().catch(() => false)) ? bySubtitle.click() : byLabel.click() };
+      };
       const plus = page.locator('[data-testid="composer-plus-btn"], button[aria-label="Add files and more"]').first();
       await plus.click(); await page.waitForTimeout(900);
       if (!(await drItem().isVisible().catch(() => false))) {
@@ -115,7 +143,10 @@ const SITES = {
       if (await dr.isVisible().catch(() => false)) {
         await dr.click(); await page.waitForTimeout(900);
         // Ground truth: the composer shows a "Deep research" chip once enabled.
-        return await page.locator('form').filter({ hasText: /deep research/i }).first().isVisible().catch(() => false);
+        // 2026-10-05: the composer is no longer a <form>; the chip is a span inside
+        // [data-composer-body] (the "New chat in Deep research" placeholder is an attribute, not text).
+        return await page.locator('form, [data-composer-body] span').filter({ hasText: /^\s*deep research\s*$/i }).first().isVisible().catch(() => false)
+          || await page.locator('form').filter({ hasText: /deep research/i }).first().isVisible().catch(() => false);
       }
       await page.keyboard.press('Escape'); return false;
     },
@@ -189,8 +220,11 @@ const OUT = opt('out');
 const COMPOSE = flag('compose');         // regular chat (no deep research), fast done-detection
 const EXPLICIT_MODEL = opt('model');     // null unless --model passed
 const MODEL = EXPLICIT_MODEL || site.defaultModel;
-const TIMEOUT_MIN = Number(opt('timeout-min', COMPOSE ? '15' : '90'));
-const POLL_S = COMPOSE ? 4 : 10;
+// GPT-6 Pro thinks for 8-20 min even in regular chat (2026-10-06).
+const TIMEOUT_MIN = Number(opt('timeout-min', COMPOSE ? (SITE_KEY === 'chatgpt' ? '45' : '15') : '90'));
+// ChatGPT is read through its conversation API, which answers 429 when polled
+// every 4 s (2026-10-06): a finished chat reply then read as 0 chars.
+const POLL_S = COMPOSE ? (SITE_KEY === 'chatgpt' ? 15 : 4) : 10;
 const STABLE_S = COMPOSE ? 12 : 150;
 const MIN_REPORT_CHARS = COMPOSE ? 500 : 2500;
 
@@ -325,20 +359,45 @@ if (firstRun && !existsSync(COOKIES_PATH)) {
   console.error(`No ${SITE_KEY} profile yet and no cookie file at ${COOKIES_PATH} to seed it.`);
   process.exit(1);
 }
-const context = await chromium.launchPersistentContext(PROFILE_DIR, {
+// A shared browser (browser-host.mjs) holds this profile open: attach to it
+// and work in a tab of our own, so several runs proceed at once. Without a
+// host, launch the profile ourselves as before.
+const HOST_FILE = join(STATE_DIR, 'browsers', `${basename(PROFILE_DIR)}.json`);
+async function attachToHost() {
+  if (!existsSync(HOST_FILE)) return null;
+  try {
+    const { port } = JSON.parse(readFileSync(HOST_FILE, 'utf8'));
+    return await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 15_000 });
+  } catch (error) {
+    log(`⚠ Shared browser listed in ${HOST_FILE} did not answer (${error.message.split('\n')[0]}); launching our own.`);
+    return null;
+  }
+}
+const hostBrowser = await attachToHost();
+const context = hostBrowser ? hostBrowser.contexts()[0] : await chromium.launchPersistentContext(PROFILE_DIR, {
   channel: 'chrome',
   headless: false,
   viewport: { width: 1440, height: 900 },
   ignoreDefaultArgs: ['--enable-automation'],
   args: ['--disable-blink-features=AutomationControlled'],
 });
-if (firstRun) {
+if (firstRun && !hostBrowser) {
   const cookies = parseNetscapeCookies(COOKIES_PATH);
   await context.addCookies(cookies);
   log(`First run — seeded ${cookies.length} cookies into ${PROFILE_DIR}`);
 }
-const page = context.pages()[0] || await context.newPage();
-process.on('SIGINT', async () => { log('Interrupted — closing browser.'); await context.close().catch(() => {}); process.exit(130); });
+const page = hostBrowser ? await context.newPage() : (context.pages()[0] || await context.newPage());
+if (hostBrowser) {
+  await page.setViewportSize({ width: 1440, height: 900 }).catch(() => undefined);
+  log(`Attached to the shared ${basename(PROFILE_DIR)} browser: own tab (${context.pages().length} open).`);
+}
+// Close only what this run opened: its tab in a shared browser, else the browser.
+async function closeSession() {
+  if (hostBrowser) { await page.close().catch(() => undefined); await hostBrowser.close().catch(() => undefined); }
+  else await context.close().catch(() => undefined);
+}
+process.on('SIGINT', async () => { log('Interrupted — closing browser.'); await closeSession(); process.exit(130); });
+process.on('SIGTERM', async () => { await closeSession(); process.exit(143); });
 
 log(`[${SITE_KEY}] Opening ${site.url} ...`);
 await page.goto(site.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
@@ -348,7 +407,7 @@ const ok = await composer.waitFor({ state: 'visible', timeout: 30_000 }).then(()
 if (!ok) {
   console.error(`\n✗ Composer never appeared — ${SITE_KEY} cookies likely expired. Delete ${PROFILE_DIR} and re-export cookies.`);
   await page.screenshot({ path: `/tmp/${SITE_KEY}-research-login.png` });
-  await context.close();
+  await closeSession();
   process.exit(2);
 }
 await page.waitForTimeout(2500);
@@ -366,7 +425,7 @@ if (USE_PROJECT) {
   } catch (e) {
     console.error(`\n✗ Could not open or create project "${PROJECT_NAME}": ${e.message}`);
     await page.screenshot({ path: `/tmp/${SITE_KEY}-research-project.png` });
-    await context.close();
+    await closeSession();
     process.exit(2);
   }
 }
@@ -374,7 +433,7 @@ if (USE_PROJECT) {
 if (CHECK) {
   await page.screenshot({ path: `/tmp/${SITE_KEY}-research-check.png` });
   log(`Check passed. Screenshot: /tmp/${SITE_KEY}-research-check.png`);
-  await context.close();
+  await closeSession();
   process.exit(webdriver ? 2 : 0);
 }
 
@@ -434,7 +493,7 @@ if (!COMPOSE || EXPLICIT_MODEL) {
   log(`${applied ? '✓' : '⚠'} Model/effort: requested "${MODEL}" · pill now shows "${pillAfter}"${effort ? ` · reasoning effort "${effort}"` : ''}${applied ? '' : ' — NOT applied, fix before relying on output'}`);
   if (!applied) {
     await page.screenshot({ path: `/tmp/${SITE_KEY}-research-model-failed.png` });
-    await context.close();
+    await closeSession();
     throw new Error(`Refusing to send: requested model/effort "${MODEL}" was not verified.`);
   }
 } else {
@@ -454,7 +513,7 @@ if (SITE_KEY === 'chatgpt') {
   const extra = filled.replace(expected, '').replace(/deep research/i, '').trim();
   if (!filled.includes(expected.slice(0, 200)) || extra.length > 40) {
     await page.screenshot({ path: `/tmp/${SITE_KEY}-research-composer-dirty.png` });
-    await context.close();
+    await closeSession();
     throw new Error(`Refusing to send: the composer holds text beyond this prompt (${extra.length} extra chars).`);
   }
 }
@@ -478,7 +537,7 @@ if (!researchOn || NO_SEND) {
     if (!ok) { await composer.click().catch(() => undefined); await page.keyboard.press('Enter'); ok = await moved(); }
     if (!ok) {
       await page.screenshot({ path: `/tmp/${SITE_KEY}-research-send-failed.png` });
-      await context.close();
+      await closeSession();
       throw new Error('Refusing to wait: the prompt was not sent (no conversation was created).');
     }
     log(`Sent → ${page.url()}`);
@@ -666,6 +725,12 @@ while (Date.now() < deadline) {
         warnedClarify = true;
       }
     }
+  } else if (SITE_KEY === 'chatgpt') {
+    // Regular chat reads the same conversation JSON: since 2026-10-05 the
+    // thread DOM has no [data-message-author-role], so the DOM read 0 chars
+    // and a finished reply timed out.
+    const r = await chatgptApiReport();
+    text = r?.text || ''; done = !!r?.done; streaming = !!r?.working && !done;
   } else {
     text = await lastAssistantText();
     streaming = await isStreaming();
@@ -704,6 +769,7 @@ while (Date.now() < deadline) {
   if (CHATGPT_DR) {
     if (done && text.length >= MIN_REPORT_CHARS && stableFor >= 15) { finalText = text; break; }
   } else {
+    if (SITE_KEY === 'chatgpt' && done && text.length > 0 && stableFor >= 4) { finalText = text; break; }
     if (!streaming && text.length >= MIN_REPORT_CHARS && stableFor >= STABLE_S) { finalText = text; break; }
     if (!streaming && text.length > 0 && stableFor >= (COMPOSE ? 30 : 600)) { finalText = text; break; }
   }
@@ -720,7 +786,8 @@ if (!finalText) {
     const sample = r.text.replace(/\s+/g, ' ').slice(0, 800);
     console.error(`CHATGPT_DIAGNOSTIC frame=${lastFrameKind} done=${r.done} working=${r.working} chars=${r.text.length} sample=${JSON.stringify(sample)}`);
   }
-  console.error(`\n✗ Timed out after ${TIMEOUT_MIN} min. The browser stays open — copy the reply manually.`);
+  console.error(`\n✗ Timed out after ${TIMEOUT_MIN} min.${hostBrowser ? ` Conversation: ${page.url()}` : ' The browser stays open — copy the reply manually.'}`);
+  if (hostBrowser) await closeSession();
   process.exit(3);
 }
 
@@ -731,6 +798,10 @@ if (CHATGPT_DR) {
   if (r.text && r.text.length > finalText.length) finalText = r.text;
   links = r.links;
   html = r.html || '';
+} else if (SITE_KEY === 'chatgpt') {
+  const r = await chatgptApiReport();
+  if (r?.text && r.text.length > finalText.length) finalText = r.text;
+  links = [...new Set(r?.links || [])].filter((u) => !/^https:\/\/(chatgpt\.com|grok\.com)/.test(u));
 } else {
   const msg = page.locator(site.assistantSel).last();
   html = await msg.innerHTML().catch(() => '');
@@ -749,4 +820,4 @@ const htmlPath = outPath.replace(/\.md$/, '') + `.${SITE_KEY}.reply.html`;
 writeFileSync(htmlPath, html);
 log(`✓ Raw HTML (citation links preserved): ${htmlPath}`);
 
-await context.close();
+await closeSession();

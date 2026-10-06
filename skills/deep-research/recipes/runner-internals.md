@@ -43,3 +43,18 @@ or history 0 means the UI came up degraded.
 `probe.mjs <url>` opens the ChatGPT profile and dumps composer selectors,
 test ids, and the deep-research toggle state. Use it when a site changes its
 UI and `run.mjs` can no longer find the composer.
+
+## Parallel runs: one shared browser, many tabs
+
+Chrome opens a profile only once, so two runs on one site used to queue. Start a
+shared browser per site profile and every run attaches to it and works in its own tab:
+
+```bash
+node browser-host.mjs --site grok        # default ports: grok 9241, chatgpt 9242
+```
+
+The host writes `$DEEP_RESEARCH_HOME/browsers/<profile>.json` while it is up; `run.mjs`
+attaches when that file exists and its port answers, closes only its own tab, and launches
+its own browser otherwise. Keep the host under a service manager (restart on exit).
+Verified 2026-10-06: three runs at once on each of Grok and ChatGPT, each answered in
+its own conversation.
