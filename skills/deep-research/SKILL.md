@@ -42,7 +42,7 @@ node scripts/recipe.mjs convert spcx-stocks --intake research/spcx.md --slot tic
       # or: turn a research run that worked into a recipe; literals become {slots}, the run is kept as v1's evidence
 node scripts/recipe.mjs render spcx-stocks --set ticker=SPCX --set window="Q4 2026"
       # → ~/.deep-research/recipes/spcx-stocks/runs/<ts>/intake.md, then run it:
-node run.mjs --site chatgpt --model "Extra High" --intake <that intake>   # or mode B
+node run.mjs --site chatgpt --intake <that intake>   # ChatGPT default: Deep research on GPT-6 Pro (or 5.6 Pro); or mode B
 node scripts/recipe.mjs log spcx-stocks --run <ts> --verdict "good: ...; weak: ..."
 node scripts/recipe.mjs list · show · runs
 ```

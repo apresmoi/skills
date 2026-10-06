@@ -13,8 +13,8 @@ logged-in Chrome, so no cookies, profiles, or anti-detection are involved.
    `~/.deep-research/projects.json` under `<site>.<name>`; it is not a
    secret. Never assume a hardcoded project.
 3. ChatGPT: confirm the **Chat / Work** toggle is on Chat; never send in
-   Work. Enable **Deep research** in the composer tools and check the effort
-   pill (default `Extra High`). Grok: pick **Expert** (or Heavy) and confirm
+   Work. Enable **Deep research** from the + menu and confirm the model
+   picker reads `6 Pro` (or `5.6 Pro`). Grok: pick **Expert** (or Heavy) and confirm
    it is shown.
 4. Paste the prompt, send, tell the user the expected wait (15 to 60 min).
 5. Poll the tab every few minutes with `get_page_text` or `find`. Done rule:
